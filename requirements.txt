@@ -8,6 +8,7 @@ edge-tts>=6.1
 gTTS>=2.3
 requests>=2.28
 pynput>=1.7
+numpy>=1.24
 
 # Optional — offline dictionary (JMdict). Without it, lookups use jisho.org.
 # jamdict

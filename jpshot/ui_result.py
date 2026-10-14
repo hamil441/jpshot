@@ -603,6 +603,12 @@ class ResultWindow(QWidget):
         self.play_btn.clicked.connect(self.toggle_play)
         self.play_btn.setEnabled(False)
         lay.addWidget(self.play_btn)
+        self.shadow_btn = QToolButton()
+        self.shadow_btn.setText("🎙 Shadow")
+        self.shadow_btn.setToolTip("Shadowing practice: record yourself and compare with the voice")
+        self.shadow_btn.setEnabled(False)
+        self.shadow_btn.clicked.connect(self.open_shadow)
+        lay.addWidget(self.shadow_btn)
         lay.addSpacing(10)
         lay.addWidget(QLabel("🐢"))
         self.speed = QSlider(Qt.Orientation.Horizontal)
@@ -881,6 +887,7 @@ class ResultWindow(QWidget):
             t, spans = japanese.render(self.ja_lines, mode)
             view.set_content(t, spans)
         self.play_btn.setEnabled(bool(text.strip()))
+        self.shadow_btn.setEnabled(bool(text.strip()))
         self._update_known_badge()
         self._update_patterns()
         self._diff_req += 1
@@ -1064,6 +1071,7 @@ class ResultWindow(QWidget):
         if not self._lookup_ctx or req_id != self._lookup_ctx["id"]:
             return
         infos = payload["infos"]
+        self._kanji_infos = {k.char: k for k in infos}
         for k in infos:
             if k.svg and not k.image_path:
                 try:
@@ -1189,7 +1197,18 @@ class ResultWindow(QWidget):
             self._show_pattern(href.split(":", 1)[1])
 
     def _show_strokes(self, ch: str):
-        pass   # (stroke-order window — added below)
+        from . import strokes
+
+        info = getattr(self, "_kanji_infos", {}).get(ch)
+        if info is None or not info.svg:
+            self.status.setText(f"No stroke data for {ch}")
+            return
+        try:
+            win = strokes.open_window(ch, info.svg, info.keyword or (info.meanings[0] if info.meanings else ""))
+        except Exception:  # noqa: BLE001
+            log.exception("Stroke-order window failed for %s", ch)
+            return
+        self._stroke_windows = [w for w in getattr(self, "_stroke_windows", []) if w.isVisible()] + [win]
 
     def _show_pattern(self, pid: str):
         self._pattern_clicked(f"p:{pid}")
@@ -1311,6 +1330,20 @@ class ResultWindow(QWidget):
         ms = patterns.matches_for(self.pattern_matches, self.ja_lines, tok)
         return "".join(f"<div>📘 <b>{html.escape(m.pattern.form)}</b> — {html.escape(m.pattern.meaning)} "
                        f"<span style='color:gray'>({m.pattern.jlpt})</span></div>" for m in ms)
+
+    # -- shadowing ----------------------------------------------------------
+    def open_shadow(self):
+        from . import shadow
+
+        sentence = flatten(self.ja_text, "ja")
+        if not sentence:
+            return
+        self.speaker.stop()
+        try:
+            dlg = shadow.open_dialog(sentence, self.cfg.voice, self._speed_value(), self)
+            dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        except Exception:  # noqa: BLE001
+            log.exception("Shadowing window failed")
 
     # -- tutor --------------------------------------------------------------
     def open_ask(self):

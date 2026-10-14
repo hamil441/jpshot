@@ -666,6 +666,9 @@ def to_html(infos: list[KanjiInfo], accent: str, word: str = "", word_story: str
         else:
             pic = f"<span style='font-size:40pt'>{html.escape(k.char)}</span>"
         info = f"<b style='color:{accent};font-size:13pt'>{html.escape(key)}</b>"
+        if k.svg:
+            info += (f" <a href='strokes:{html.escape(k.char)}' style='text-decoration:none;font-size:9pt'>"
+                     f"✍ stroke order</a>")
         tags = [t for t in (f"{k.strokes} strokes" if k.strokes else "",
                             f"JLPT N{k.jlpt}" if k.jlpt else "",
                             k.origin_kind) if t]
