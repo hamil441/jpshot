@@ -1,0 +1,206 @@
+"""Tray app: global hotkey -> capture -> OCR -> result window. Single instance via a local socket."""
+from __future__ import annotations
+
+import getpass
+import logging
+import os
+import sys
+
+from PySide6.QtCore import QObject, QRect, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+
+from . import japanese, ocr
+from .capture import CaptureSession, pixmap_to_pil
+from .dictionary import Dictionary
+from .tts import Speaker
+from .ui_result import ResultWindow
+from .workers import run_async
+
+log = logging.getLogger("jpshot.app")
+SERVER_NAME = f"jpshot-{getpass.getuser()}"
+
+
+def make_icon() -> QIcon:
+    pm = QPixmap(64, 64)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setBrush(QColor("#e8556d"))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.drawRoundedRect(2, 2, 60, 60, 14, 14)
+    f = QFont()
+    f.setFamilies(["Noto Sans CJK JP", "Yu Gothic UI", "Hiragino Sans", "Meiryo"])
+    f.setPixelSize(40)
+    f.setBold(True)
+    p.setFont(f)
+    p.setPen(Qt.GlobalColor.white)
+    p.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, "訳")
+    p.end()
+    return QIcon(pm)
+
+
+def send_to_running(command: str) -> bool:
+    """Return True if another instance is running and received the command."""
+    sock = QLocalSocket()
+    sock.connectToServer(SERVER_NAME)
+    if not sock.waitForConnected(300):
+        return False
+    sock.write(command.encode())
+    sock.flush()
+    sock.waitForBytesWritten(500)
+    sock.disconnectFromServer()
+    log.info("Sent %r to the running JPShot instance", command)
+    return True
+
+
+class JPShotApp(QObject):
+    capture_requested = Signal()
+
+    def __init__(self, cfg):
+        super().__init__()
+        self.cfg = cfg
+        self.session: CaptureSession | None = None
+        self.had_result = False
+        self.busy = False
+
+        ocr.configure(cfg.tesseract_cmd)
+        self.dictionary = Dictionary(cfg.dictionary)
+        self.speaker = Speaker(cfg)
+        self.result = ResultWindow(cfg, self.dictionary, self.speaker)
+
+        self.capture_requested.connect(self.start_capture, Qt.ConnectionType.QueuedConnection)
+        self._setup_server()
+        self._setup_tray()
+        self._setup_hotkey()
+        QTimer.singleShot(0, self._warm_up)
+
+    # -- setup ------------------------------------------------------------
+    def _warm_up(self):
+        try:
+            japanese.get_tagger()
+        except Exception:
+            log.exception("Could not load the Japanese tokenizer (pip install fugashi unidic-lite)")
+
+    def _setup_server(self):
+        QLocalServer.removeServer(SERVER_NAME)
+        self.server = QLocalServer(self)
+        if not self.server.listen(SERVER_NAME):
+            log.warning("Could not open control socket: %s", self.server.errorString())
+        self.server.newConnection.connect(self._on_connection)
+
+    def _on_connection(self):
+        sock = self.server.nextPendingConnection()
+
+        def read():
+            cmd = bytes(sock.readAll()).decode(errors="ignore").strip()
+            log.info("Received command %r", cmd)
+            if cmd == "capture":
+                self.capture_requested.emit()
+            elif cmd == "show" and self.had_result:
+                self.result.show()
+                self.result.raise_()
+            elif cmd == "quit":
+                QApplication.quit()
+        sock.readyRead.connect(read)
+
+    def _setup_tray(self):
+        self.tray = None
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            log.info("No system tray available; use the hotkey or `python -m jpshot capture`")
+            return
+        self.tray = QSystemTrayIcon(make_icon(), self)
+        hk = self.cfg.hotkey or "no hotkey"
+        self.tray.setToolTip(f"JPShot — {hk}")
+        menu = QMenu()
+        a = QAction(f"Capture  ({hk})", menu)
+        a.triggered.connect(self.capture_requested.emit)
+        menu.addAction(a)
+        a = QAction("Show last result", menu)
+        a.triggered.connect(lambda: self.had_result and (self.result.show(), self.result.raise_()))
+        menu.addAction(a)
+        menu.addSeparator()
+        a = QAction("Quit", menu)
+        a.triggered.connect(QApplication.quit)
+        menu.addAction(a)
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(
+            lambda r: r == QSystemTrayIcon.ActivationReason.Trigger and self.capture_requested.emit())
+        self.tray.show()
+        self._menu = menu
+
+    def _setup_hotkey(self):
+        self.hotkey_listener = None
+        if not self.cfg.hotkey:
+            log.info("Global hotkey disabled in config")
+            return
+        if sys.platform.startswith("linux") and os.environ.get("XDG_SESSION_TYPE") == "wayland":
+            log.warning("Wayland session: global hotkeys from apps usually don't work. Bind "
+                        "`python -m jpshot capture` to a key in your desktop's keyboard settings.")
+        try:
+            from pynput import keyboard
+
+            def fire():
+                log.debug("Hotkey %s pressed", self.cfg.hotkey)
+                self.capture_requested.emit()  # thread-safe: queued to the UI thread
+
+            self.hotkey_listener = keyboard.GlobalHotKeys({self.cfg.hotkey: fire})
+            self.hotkey_listener.daemon = True
+            self.hotkey_listener.start()
+            log.info("Global hotkey registered: %s", self.cfg.hotkey)
+        except Exception as e:  # noqa: BLE001
+            log.error("Could not register global hotkey %r: %s. Use the tray icon or bind "
+                      "`python -m jpshot capture` to a key in your OS settings.", self.cfg.hotkey, e)
+
+    # -- capture flow -----------------------------------------------------
+    def start_capture(self):
+        if self.session is not None or self.busy:
+            log.debug("Capture already in progress; ignoring")
+            return
+        log.info("Starting capture")
+        self.had_result = self.result.isVisible() or self.had_result
+        self.result.hide()
+        # give the window manager a moment to remove our window before grabbing
+        QTimer.singleShot(180, self._grab)
+
+    def _grab(self):
+        self.session = CaptureSession()
+        self.session.selected.connect(self._on_selected)
+        self.session.cancelled.connect(self._on_cancelled)
+
+    def _on_cancelled(self):
+        self.session = None
+
+    def _on_selected(self, pixmap, rect: QRect):
+        self.session = None
+        self.process_image(pixmap_to_pil(pixmap), rect)
+
+    def process_image(self, img, anchor: QRect):
+        self.busy = True
+        QApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
+        run_async(ocr.recognize, img, self.cfg.ocr_languages, self.cfg.ocr_min_confidence,
+                  self.cfg.ocr_min_chars,
+                  on_done=lambda res: self._on_ocr(res, anchor),
+                  on_error=self._on_ocr_error)
+
+    def _on_ocr(self, res, anchor):
+        self.busy = False
+        QApplication.restoreOverrideCursor()
+        if res is None:
+            return  # nothing detected -> nothing happens
+        self.had_result = True
+        self.result.show_result(res, anchor)
+
+    def _on_ocr_error(self, msg):
+        self.busy = False
+        QApplication.restoreOverrideCursor()
+        log.error("OCR failed: %s", msg)
+        if self.tray:
+            self.tray.showMessage("JPShot", f"OCR failed: {msg}", QSystemTrayIcon.MessageIcon.Warning, 4000)
+
+    def shutdown(self):
+        log.info("Shutting down")
+        if self.hotkey_listener:
+            self.hotkey_listener.stop()
+        self.speaker.stop()
