@@ -5,9 +5,11 @@ A Flameshot-style screenshot tool for learning Japanese. Press the hotkey, drag 
 - **English**, **日本語** (original), **Furigana** (readings drawn above the kanji), **ひらがな** and **Rōmaji** — click one in the row at the top to show just that box, or Ctrl+click to show several at once. Everything is selectable and copyable.
 - **Select to translate** — highlight part of any row and just that part is translated in a bar at the top.
 - **Dictionary popup** — hold **Shift** and hover a Japanese word: reading, rōmaji, dictionary form, meanings, its grammatical role, and a **kanji breakdown** in the spirit of *Remembering the Kanji*: the kanji drawn with each part in its own color, the RTK keyword, the parts and their meanings in matching colors, readings, and a short (≤3 sentence) explanation of how the parts make the meaning.
-- **Grammar mode** — colors every word by part of speech; hovering any word (no Shift needed) explains particles, auxiliaries, conjugation type and form, and what a whole verb phrase means (e.g. 勉強しています → present · ongoing · polite).
+- **Grammar mode** — colors every word by part of speech; hold Shift over a word to see particles, auxiliaries, conjugation type and form, and what a whole verb phrase means (e.g. 勉強しています → present · ongoing · polite).
 - **Read in Japanese** — neural text-to-speech with a **speed slider** (0.5× – 2×) always visible at the bottom.
 - **⛏ Mine** — make an Anki card from the capture: screenshot (plus more screenshots, image files or a pasted image), every version of the text, the word you looked up and its meaning, and the Japanese audio.
+- **Screenshot panel** beside the text (🖼, Ctrl+I): scroll to zoom, drag to move, double-click to fit.
+- **Voice library**: Microsoft and Google voices, plus every VOICEVOX / AivisSpeech voice when those free apps are running.
 - **Copy image**, **dark mode** (☾/☀ button) and a **⚙ Settings** window.
 
 If no text is detected, nothing happens.
@@ -66,8 +68,9 @@ Default hotkey: **Ctrl+Alt+J**. Left-clicking the tray icon also starts a captur
 | Result | click a box name in the top row, or Alt+1 … Alt+5 | show only that box (English, 日本語, Furigana, ひらがな, Rōmaji) |
 | Result | Ctrl+click a box name | show several boxes at once |
 | Result | select text in any row | translate just that part |
-| Result | Shift + hover a Japanese word | dictionary, grammar and kanji popup |
-| Result | Grammar toggle, or Alt+G | color words by part of speech; plain hover explains them |
+| Result | Shift + hover a Japanese word (key changeable in Settings) | dictionary, grammar and kanji popup |
+| Result | Grammar toggle, or Alt+G | color words by part of speech |
+| Result | 🖼 or Ctrl+I | show/hide the screenshot panel (scroll = zoom, drag = move, double-click = fit) |
 | Result | Esc | close popup, then the window |
 | Result | Space | play / stop audio |
 | Result | `[` / `]` | slower / faster speech |
@@ -92,6 +95,20 @@ The colored drawings use KanjiVG stroke data (CC BY-SA 3.0, downloaded per kanji
 
 Anki requires a card's **first field** to have something in it. For vocabulary note types that's usually the word: Shift-hover a word before mining, highlight it, or type it in the dialog's Word box and press **Look up** to fill its furigana, reading, meaning and part of speech. **Guess fields again** re-guesses the field choices for a note type.
 
+### The JPShot card type
+
+Press **Use JPShot card type** in the Mine dialog to create a ready-made *JPShot Sentence* note type in Anki (pressing it again updates it). Then choose per card:
+
+- **Reading card** — front: the image and the Japanese sentence; back: the sentence with furigana, the English, the image, the looked-up word, and the audio, which plays automatically.
+- **Random font and size** — the Japanese on the Reading front appears in a different installed Japanese font and size each review (🔀 on the card reshuffles), so you learn the characters, not one font. Installing more Japanese fonts gives more variety (Arch: `noto-fonts-cjk`, `otf-ipaexfont`, …).
+- **Hearing card** — front: the image and the audio, spoken by a random voice from your Hearing-card voices; back: furigana and English (the audio doesn't replay).
+
+Tick both to get both cards from one capture.
+
+### More voices
+
+The free Microsoft service has two Japanese voices (Nanami and Keita), plus Google's. For many more, install **VOICEVOX** (free; Arch: AUR package `voicevox`, or Docker `voicevox/voicevox_engine:cpu-latest`) and keep it running. JPShot finds its voices automatically, and also those of **AivisSpeech**. Pick your main voice and the pool for Hearing cards in ⚙ Settings. Check each VOICEVOX character's terms if you share cards publicly; the voice name is saved on Hearing cards.
+
 Furigana is written in Anki's format (`食[た]べる`), so it shows above the kanji on cards that use `{{furigana:Field}}`. If you Shift-hover a word before mining, that word, its reading and its meaning are filled in too.
 
 ## Configuration
@@ -104,8 +121,10 @@ Use **⚙ Settings** in the window (or `jpshot settings`). Changes apply immedia
 | `tesseract_cmd` | `""` | full path if Tesseract isn't found automatically |
 | `ocr_min_confidence` | `55` | raise it if you get garbage text, lower it if text is missed |
 | `translator` | `google` | Google with automatic fallbacks; `mymemory`; or `argos` (offline) |
-| `tts_engine` | `edge` | Microsoft neural voices (online); falls back to `gtts` |
-| `tts_voice` | `ja-JP-NanamiNeural` | or `ja-JP-KeitaNeural` (male) |
+| `voice` | `edge:ja-JP-NanamiNeural` | voice id; pick from the list in Settings |
+| `hearing_voices` | `[]` | voices for Hearing cards (empty = all) |
+| `lookup_key` | `shift` | key held for the word popup: `shift`, `ctrl`, `alt`, `meta` |
+| `show_image` | `true` | screenshot panel beside the text |
 | `dictionary` | `auto` | offline JMdict if installed, else jisho.org; or force `jamdict` / `jisho` |
 | `theme` | `system` | `light`, `dark` or follow the system |
 | `sections` | `["japanese"]` | which boxes are shown |

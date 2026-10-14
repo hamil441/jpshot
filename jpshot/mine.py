@@ -110,8 +110,15 @@ def _as_field_html(text: str) -> str:
 
 
 def build_and_add(url: str, note: dict, images: list[tuple[bytes, str]], image_fields: list[str],
-                  audio_text: str, audio_fields: list[str], speed: float, engine: str, voice: str) -> int:
-    """Runs off the UI thread: synthesize audio if needed, attach media, add the note."""
+                  audio_specs: list[dict], voice_field: str = "") -> int:
+    """Runs off the UI thread: synthesize audio, attach media, add the note.
+
+    audio_specs: [{"text", "speed", "fields", "voice"} or {..., "random_from": [voice ids] (empty = all)}]
+    """
+    import random
+
+    from .tts import available_voices, synthesize, voice_name
+
     stamp = time.strftime("%Y%m%d-%H%M%S")
     if images and image_fields:
         note["picture"] = [
@@ -119,13 +126,30 @@ def build_and_add(url: str, note: dict, images: list[tuple[bytes, str]], image_f
              "fields": image_fields}
             for i, (data, ext) in enumerate(images)
         ]
-    if audio_text and audio_fields:
-        from .tts import synthesize
-
-        path, _rate = synthesize(audio_text, speed, engine, voice)
-        note["audio"] = [{"data": base64.b64encode(Path(path).read_bytes()).decode(),
-                          "filename": f"jpshot-{stamp}.mp3", "fields": audio_fields}]
+    audio = []
+    for n, spec in enumerate(audio_specs):
+        if not spec.get("text") or not spec.get("fields"):
+            continue
+        voice = spec.get("voice", "")
+        if "random_from" in spec:
+            pool = [v.id for v in available_voices() if not spec["random_from"] or v.id in spec["random_from"]]
+            voice = random.choice(pool)
+            log.info("Hearing card voice: %s", voice_name(voice))
+            if voice_field:
+                note["fields"][voice_field] = html.escape(voice_name(voice))
+        path, _rate = synthesize(spec["text"], spec.get("speed", 1.0), voice)
+        audio.append({"data": base64.b64encode(Path(path).read_bytes()).decode(),
+                      "filename": f"jpshot-{stamp}-{n}{Path(path).suffix}", "fields": spec["fields"]})
+    if audio:
+        note["audio"] = audio
     return anki.add_note(url, note)
+
+
+def ensure_jpshot_model(url: str) -> dict:
+    from .anki_model import ensure_model
+
+    ensure_model(url)
+    return anki.load_collection_info(url)
 
 
 class MineDialog(QDialog):
@@ -173,10 +197,34 @@ class MineDialog(QDialog):
         tf.addRow("Deck", deck_row)
         self.model = QComboBox()
         self.model.currentTextChanged.connect(self._model_changed)
-        tf.addRow("Note type", self.model)
+        self.jps_btn = QPushButton("Use JPShot card type")
+        self.jps_btn.setToolTip("Create (or update) the “JPShot Sentence” note type in Anki and use it:\n"
+                                "Reading and Hearing cards, random fonts, audio on the back")
+        self.jps_btn.setEnabled(False)
+        self.jps_btn.clicked.connect(self._use_jpshot_model)
+        model_row = QHBoxLayout()
+        model_row.addWidget(self.model, 1)
+        model_row.addWidget(self.jps_btn)
+        tf.addRow("Note type", model_row)
         self.tags = QLineEdit(cfg.anki_tags)
         self.tags.setPlaceholderText("space-separated tags")
         tf.addRow("Tags", self.tags)
+
+        self.jps_box = QGroupBox("JPShot cards")
+        jl = QVBoxLayout(self.jps_box)
+        self.make_reading = QCheckBox("Reading card — front: image + Japanese; back: furigana, English, "
+                                      "image, audio (plays automatically)")
+        self.make_reading.setChecked(bool(cfg.anki_reading))
+        self.make_hearing = QCheckBox("Hearing card — front: image + audio in a random voice; back: "
+                                      "furigana, English (audio doesn't replay)")
+        self.make_hearing.setChecked(bool(cfg.anki_hearing))
+        self.random_font = QCheckBox("Random font and size for the Japanese on the Reading front "
+                                     "(🔀 on the card reshuffles)")
+        self.random_font.setChecked(bool(cfg.anki_random_font))
+        for w in (self.make_reading, self.make_hearing, self.random_font):
+            w.setStyleSheet("QCheckBox { padding: 2px 0; }")
+            jl.addWidget(w)
+        self.jps_box.hide()
 
         self.map_box = QGroupBox("What goes in each field")
         map_outer = QVBoxLayout(self.map_box)
@@ -258,6 +306,7 @@ class MineDialog(QDialog):
         inner = QWidget()
         lay = QVBoxLayout(inner)
         lay.addWidget(target)
+        lay.addWidget(self.jps_box)
         lay.addWidget(self.map_box)
         lay.addWidget(content)
         lay.addWidget(img_box)
@@ -302,6 +351,7 @@ class MineDialog(QDialog):
         self._model_changed(self.model.currentText())
         self.add_btn.setEnabled(bool(info["decks"] and info["models"]))
         self.new_deck_btn.setEnabled(True)
+        self.jps_btn.setEnabled(True)
         if self._select_deck_after_load:
             self.deck.setCurrentText(self._select_deck_after_load)
             self._select_deck_after_load = ""
@@ -333,6 +383,24 @@ class MineDialog(QDialog):
         self.new_deck_btn.setEnabled(True)
         self.status.setText(f"<span style='color:#d44'>Could not create deck: "
                             f"{html.escape(msg.split(': ', 1)[-1])}</span>")
+
+    def _use_jpshot_model(self):
+        self.status.setText("Setting up the JPShot card type in Anki…")
+        self.jps_btn.setEnabled(False)
+        run_async(ensure_jpshot_model, self.cfg.anki_url,
+                  on_done=self._jpshot_model_ready, on_error=self._anki_failed)
+
+    def _jpshot_model_ready(self, info):
+        from .anki_model import MODEL_NAME
+
+        self.cfg.anki_model = MODEL_NAME
+        self._anki_loaded(info)
+        self.model.setCurrentText(MODEL_NAME)
+        self.status.setText("Using the JPShot Sentence card type")
+
+    def _is_jpshot_model(self) -> bool:
+        from .anki_model import MODEL_NAME
+        return self.model.currentText() == MODEL_NAME
 
     def _reguess(self):
         self._ignore_saved = True
@@ -368,6 +436,10 @@ class MineDialog(QDialog):
         self.status.setText(f"Filled in {html.escape(query)}")
 
     def _model_changed(self, model: str):
+        jps = self._is_jpshot_model()
+        self.jps_box.setVisible(jps)
+        self.map_box.setVisible(not jps)
+        self.audio.setVisible(not jps)
         while self.map_form.rowCount():
             self.map_form.removeRow(0)
         self.field_combos.clear()
@@ -444,6 +516,9 @@ class MineDialog(QDialog):
     def _add(self):
         if not self.info or not self.add_btn.isEnabled():
             return
+        if self._is_jpshot_model():
+            self._add_jpshot()
+            return
         model, deck = self.model.currentText(), self.deck.currentText()
         mapping = {f: c.currentData() for f, c in self.field_combos.items()}
         fields, image_fields, audio_fields = {}, [], []
@@ -490,9 +565,59 @@ class MineDialog(QDialog):
                  deck, model, list(fields), len(self.images) if image_fields else 0, bool(audio_text))
         run_async(build_and_add, self.cfg.anki_url, note,
                   [(d, e) for d, e, _ in self.images], image_fields,
-                  audio_text, audio_fields, float(self.data.get("speed", 1.0)),
-                  self.cfg.tts_engine, self.cfg.tts_voice,
+                  [{"text": audio_text, "voice": self.cfg.voice, "fields": audio_fields,
+                    "speed": float(self.data.get("speed", 1.0))}],
                   on_done=self._added, on_error=self._add_failed)
+
+    def _add_jpshot(self):
+        from .anki_model import MODEL_NAME
+
+        reading, hearing = self.make_reading.isChecked(), self.make_hearing.isChecked()
+        if not (reading or hearing):
+            self.status.setText("Tick Reading card, Hearing card, or both")
+            return
+        t = {k: e.toPlainText().strip() for k, e in self.text_edits.items()}
+        sentence = t["japanese"]
+        if not sentence:
+            self.status.setText("The Japanese sentence is empty")
+            return
+        fields = {
+            "Sentence": _as_field_html(sentence),
+            "Furigana": _as_field_html(t["furigana"] or sentence),
+            "English": _as_field_html(t["english"]),
+            "Word": _as_field_html(t["word_furigana"] or t["word"]),
+            "WordReading": _as_field_html(t["word_reading"]),
+            "WordMeaning": _as_field_html(t["word_meaning"]),
+            "Notes": _as_field_html(t["notes"]),
+            "Reading": "1" if reading else "",
+            "Hearing": "1" if hearing else "",
+            "RandomFont": "1" if self.random_font.isChecked() else "",
+            "Voice": "",
+        }
+        note = {"deckName": self.deck.currentText(), "modelName": MODEL_NAME, "fields": fields,
+                "tags": self.tags.text().split(),
+                "options": {"allowDuplicate": self.dup.isChecked(), "duplicateScope": "deck"}}
+        audio_text = self.data.get("audio_text", "") or sentence.replace("\n", "")
+        speed = float(self.data.get("speed", 1.0))
+        specs = []
+        if reading:
+            specs.append({"text": audio_text, "voice": self.cfg.voice, "speed": speed, "fields": ["Audio"]})
+        if hearing:
+            specs.append({"text": audio_text, "random_from": list(self.cfg.hearing_voices),
+                          "speed": speed, "fields": ["HearingAudio"]})
+
+        self.cfg.anki_deck, self.cfg.anki_model = self.deck.currentText(), MODEL_NAME
+        self.cfg.anki_tags = self.tags.text()
+        self.cfg.anki_reading, self.cfg.anki_hearing = reading, hearing
+        self.cfg.anki_random_font = self.random_font.isChecked()
+        self.cfg.save()
+
+        self.add_btn.setEnabled(False)
+        self.status.setText("Adding card… (generating audio)")
+        log.info("Mining JPShot card: reading=%s hearing=%s random_font=%s, %d image(s)",
+                 reading, hearing, self.random_font.isChecked(), len(self.images))
+        run_async(build_and_add, self.cfg.anki_url, note, [(d, e) for d, e, _ in self.images], ["Image"],
+                  specs, "Voice", on_done=self._added, on_error=self._add_failed)
 
     def _added(self, nid):
         self.last_note_id = nid

@@ -70,6 +70,8 @@ class JPShotApp(QObject):
         self.dictionary = Dictionary(cfg.dictionary)
         self._apply_story_settings()
         self.speaker = Speaker(cfg)
+        from . import lookupkey
+        lookupkey.set_key(cfg.lookup_key)
         self.result = ResultWindow(cfg, self.dictionary, self.speaker)
         self.result.settings_requested.connect(self.open_settings)
         self.result.theme_toggled.connect(self.toggle_theme)

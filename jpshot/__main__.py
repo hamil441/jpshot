@@ -66,8 +66,11 @@ def cmd_check(cfg: Config) -> int:
 
     def tts():
         from .tts import synthesize
-        path, rate = synthesize("テスト", 1.0, cfg.tts_engine, cfg.tts_voice)
-        return f"{path.name} ({path.stat().st_size} bytes)"
+        from .tts import available_voices
+        path, rate = synthesize("テスト", 1.0, cfg.voice)
+        vv = [v for v in available_voices() if v.engine in ("voicevox", "aivis")]
+        extra = f"; {len(vv)} VOICEVOX/AivisSpeech voices" if vv else "; VOICEVOX not running (optional)"
+        return f"{cfg.voice} → {path.name} ({path.stat().st_size} bytes){extra}"
 
     def qt():
         import PySide6

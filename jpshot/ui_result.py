@@ -17,8 +17,9 @@ from PySide6.QtGui import (QClipboard, QColor, QCursor, QFont, QGuiApplication, 
 from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QSlider,
                                QSplitter, QTextEdit, QToolButton, QVBoxLayout, QWidget)
 
-from . import grammar, japanese, kanji, theme, translate
+from . import grammar, japanese, kanji, lookupkey, theme, translate
 from .furigana_view import FuriganaView
+from .image_view import ImageView
 from .config import ALL_SECTIONS
 from .log import short
 from .ocr import OcrResult, flatten
@@ -77,7 +78,7 @@ class WordView(QTextEdit):
         self.viewport().setMouseTracking(True)
         self.spans: list[japanese.Span] = []
         self._hover: japanese.Span | None = None
-        self.hover_lookup = False   # grammar mode: look up on plain hover
+        self.hover_lookup = False   # grammar mode on (colors); lookups still need the lookup key
         self._colored = False
 
     def set_content(self, text: str, spans: list[japanese.Span] | None = None):
@@ -174,7 +175,7 @@ class WordView(QTextEdit):
 
     def mouseMoveEvent(self, e):
         super().mouseMoveEvent(e)
-        if (self.hover_lookup or e.modifiers() & Qt.KeyboardModifier.ShiftModifier) \
+        if (e.modifiers() & lookupkey.modifier()) \
                 and not (e.buttons() & Qt.MouseButton.LeftButton):
             self.lookup_at(e.position().toPoint())
 
@@ -276,7 +277,7 @@ class ResultWindow(QWidget):
         self.cfg, self.dictionary, self.speaker = cfg, dictionary, speaker
         self.setWindowTitle("JPShot")
         self.setStyleSheet(CSS)
-        self.resize(600, 640)
+        self.resize(940, 640)
 
         self.source: OcrResult | None = None
         self.pixmap: QPixmap | None = None
@@ -308,7 +309,9 @@ class ResultWindow(QWidget):
 
         self.status = QLabel()
         self.status.setObjectName("muted")
-        hint = QLabel("Hold <b>Shift</b> over a Japanese word to look it up")
+        hint = QLabel()
+        self.hint = hint
+        self._update_hint()
         hint.setObjectName("muted")
         foot = QHBoxLayout()
         foot.addWidget(self.status, 1)
@@ -318,16 +321,31 @@ class ResultWindow(QWidget):
         self.legend.setObjectName("muted")
         self.legend.setWordWrap(True)
 
+        # screenshot on the left, text on the right
+        self.image_view = ImageView()
+        right = QWidget()
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.addWidget(self._build_selection_bar())
+        rl.addWidget(self.splitter, 1)
+        self.hsplit = QSplitter(Qt.Orientation.Horizontal)
+        self.hsplit.setChildrenCollapsible(False)
+        self.hsplit.addWidget(self.image_view)
+        self.hsplit.addWidget(right)
+        self.hsplit.setStretchFactor(0, 2)
+        self.hsplit.setStretchFactor(1, 3)
+        self.hsplit.setSizes([360, 560])
+
         root = QVBoxLayout(self)
         root.addLayout(self._build_toolbar())
         root.addWidget(self.legend)
-        root.addWidget(self._build_selection_bar())
-        root.addWidget(self.splitter, 1)
+        root.addWidget(self.hsplit, 1)
         root.addWidget(self._build_audio())
         root.addLayout(foot)
 
         self._apply_section_visibility()
         self._apply_grammar_mode()
+        self._update_image_visibility()
         dictionary.finished.connect(self._lookup_done)
         dictionary.kanji_finished.connect(self._kanji_done)
         speaker.state_changed.connect(self._speaker_state)
@@ -374,8 +392,8 @@ class ResultWindow(QWidget):
         self.grammar_btn.setObjectName("chip")
         self.grammar_btn.setText("Grammar")
         self.grammar_btn.setCheckable(True)
-        self.grammar_btn.setToolTip("Color words by part of speech; hover a word to see its role, "
-                                    "tense and form  (Alt+G)")
+        self.grammar_btn.setToolTip("Color words by part of speech; hold the lookup key over a word to "
+                                    "see its role, tense and form  (Alt+G)")
         self.grammar_btn.setShortcut(QKeySequence("Alt+G"))
         self.grammar_btn.setChecked(bool(self.cfg.grammar_mode))
         self.grammar_btn.toggled.connect(self._grammar_toggled)
@@ -393,6 +411,15 @@ class ResultWindow(QWidget):
         self.copy_img_btn.setEnabled(False)
         self.copy_img_btn.clicked.connect(self._copy_image)
         bar.addWidget(self.copy_img_btn)
+        self.image_btn = QToolButton()
+        self.image_btn.setText("🖼")
+        self.image_btn.setCheckable(True)
+        self.image_btn.setChecked(bool(self.cfg.show_image))
+        self.image_btn.setToolTip("Show the screenshot beside the text  (Ctrl+I)\n"
+                                  "Scroll to zoom · drag to move · double-click to fit")
+        self.image_btn.setShortcut(QKeySequence("Ctrl+I"))
+        self.image_btn.toggled.connect(self._image_toggled)
+        bar.addWidget(self.image_btn)
         self.theme_btn = QToolButton()
         self.theme_btn.setToolTip("Switch light / dark")
         self.theme_btn.clicked.connect(self.theme_toggled.emit)
@@ -468,6 +495,20 @@ class ResultWindow(QWidget):
         return w
 
     # -- settings / theme -------------------------------------------------
+    def _image_toggled(self, on: bool):
+        self.cfg.show_image = on
+        self.cfg.save()
+        self._update_image_visibility()
+
+    def _update_image_visibility(self):
+        has = self.pixmap is not None and not self.pixmap.isNull()
+        self.image_view.setVisible(bool(self.cfg.show_image) and has)
+        if self.image_view.isVisible():
+            self.image_view.fit()
+
+    def _update_hint(self):
+        self.hint.setText(f"Hold <b>{lookupkey.name()}</b> over a Japanese word to look it up")
+
     def update_theme_button(self):
         dark = theme.is_dark(self.cfg.theme)
         self.theme_btn.setText("☀" if dark else "☾")
@@ -478,6 +519,8 @@ class ResultWindow(QWidget):
             sec.view.setFont(self._font_for(key))
         self._apply_section_visibility()
         self.grammar_btn.setChecked(bool(self.cfg.grammar_mode))
+        lookupkey.set_key(self.cfg.lookup_key)
+        self._update_hint()
         self.update_theme_button()
         self.setStyleSheet("")
         self.setStyleSheet(CSS)
@@ -525,6 +568,8 @@ class ResultWindow(QWidget):
         req = self._req
         self.source = res
         self.pixmap = pixmap
+        self.image_view.set_pixmap(pixmap)
+        self._update_image_visibility()
         self.copy_img_btn.setEnabled(pixmap is not None and not pixmap.isNull())
         self.mine_btn.setEnabled(True)
         self._sel_text = ""
@@ -810,7 +855,7 @@ class ResultWindow(QWidget):
 
     def eventFilter(self, obj, ev):
         t = ev.type()
-        if t == QEvent.Type.KeyPress and ev.key() == Qt.Key.Key_Shift and not ev.isAutoRepeat() \
+        if t == QEvent.Type.KeyPress and ev.key() == lookupkey.key() and not ev.isAutoRepeat() \
                 and self.isVisible():
             v = self._view_under_cursor()
             if v is not None:

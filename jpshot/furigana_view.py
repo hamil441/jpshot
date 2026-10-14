@@ -13,7 +13,7 @@ from PySide6.QtCore import QPoint, QRect, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPalette
 from PySide6.QtWidgets import QFrame, QScrollArea, QWidget
 
-from . import grammar, japanese
+from . import grammar, japanese, lookupkey
 from .japanese import Token
 
 log = logging.getLogger("jpshot.furigana")
@@ -190,7 +190,7 @@ class _Canvas(QWidget):
                 self.sel = (min(self._anchor, i), max(self._anchor, i))
                 self.update()
             return
-        if self.hover_lookup or e.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+        if e.modifiers() & lookupkey.modifier():
             self.lookup_at(pos)
 
     def mouseReleaseEvent(self, e):

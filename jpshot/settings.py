@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QUrl, Signal
+from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
-                               QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox,
-                               QVBoxLayout)
+                               QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+                               QListWidgetItem, QPushButton, QSpinBox, QToolButton, QVBoxLayout)
 
 from .config import ALL_SECTIONS, Config
+from .workers import run_async
 
 log = logging.getLogger("jpshot.settings")
 
@@ -62,11 +63,24 @@ class SettingsDialog(QDialog):
                                   ("mymemory", "MyMemory first"),
                                   ("argos", "Argos (offline only)")], cfg.translator)
         f.addRow("Translator", self.translator)
-        self.tts_engine = _combo([("edge", "Neural voices (edge-tts)"), ("gtts", "Google TTS")],
-                                 cfg.tts_engine)
-        f.addRow("Speech engine", self.tts_engine)
-        self.voice = _combo(VOICES, cfg.tts_voice)
-        f.addRow("Voice", self.voice)
+        self.voice = QComboBox()
+        self.voice.addItem(cfg.voice, cfg.voice)
+        refresh = QToolButton()
+        refresh.setText("↻")
+        refresh.setToolTip("Look for VOICEVOX / AivisSpeech voices again")
+        refresh.clicked.connect(lambda: self._load_voices(True))
+        vrow = QHBoxLayout()
+        vrow.addWidget(self.voice, 1)
+        vrow.addWidget(refresh)
+        f.addRow("Voice", vrow)
+        self.hearing = QListWidget()
+        self.hearing.setFixedHeight(120)
+        self.hearing.setToolTip("Hearing cards use a random voice from the ticked ones (none ticked = all)")
+        f.addRow("Hearing-card voices", self.hearing)
+        self.voice_hint = QLabel()
+        self.voice_hint.setWordWrap(True)
+        self.voice_hint.setStyleSheet("color:gray")
+        f.addRow(self.voice_hint)
         self.dictionary = _combo([("auto", "Auto (offline if installed, else jisho.org)"),
                                   ("jamdict", "Offline JMdict (jamdict)"),
                                   ("jisho", "jisho.org")], cfg.dictionary)
@@ -93,6 +107,10 @@ class SettingsDialog(QDialog):
         f = QFormLayout(look)
         self.theme = _combo([("system", "Follow system"), ("light", "Light"), ("dark", "Dark")], cfg.theme)
         f.addRow("Theme", self.theme)
+        self.lookup_key = _combo([("shift", "Shift"), ("ctrl", "Ctrl"), ("alt", "Alt"), ("meta", "Super / Windows key")],
+                                 cfg.lookup_key)
+        self.lookup_key.setToolTip("Hold this key over a Japanese word to see its dictionary, grammar and kanji")
+        f.addRow("Word popup key", self.lookup_key)
         self.ja_size = QSpinBox()
         self.ja_size.setRange(10, 48)
         self.ja_size.setValue(int(cfg.japanese_font_size))
@@ -128,11 +146,42 @@ class SettingsDialog(QDialog):
         note.setStyleSheet("color:gray")
         note.setWordWrap(True)
 
+        self._load_voices()
+
         lay = QVBoxLayout(self)
         for g in (cap, svc, story, look):
             lay.addWidget(g)
         lay.addWidget(note)
         lay.addLayout(bottom)
+
+    def _load_voices(self, refresh=False):
+        from .tts import available_voices
+
+        self.voice_hint.setText("Looking for voices…")
+        run_async(available_voices, refresh, on_done=self._voices_loaded)
+
+    def _voices_loaded(self, voices):
+        current = self.voice.currentData() or self.cfg.voice
+        self.voice.clear()
+        self.hearing.clear()
+        for v in voices:
+            self.voice.addItem(v.name, v.id)
+            item = QListWidgetItem(v.name)
+            item.setData(Qt.ItemDataRole.UserRole, v.id)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if v.id in self.cfg.hearing_voices
+                               else Qt.CheckState.Unchecked)
+            self.hearing.addItem(item)
+        i = self.voice.findData(current)
+        self.voice.setCurrentIndex(max(0, i))
+        local = sum(1 for v in voices if v.engine in ("voicevox", "aivis"))
+        if local:
+            self.voice_hint.setText(f"{len(voices)} voices, including {local} from VOICEVOX/AivisSpeech "
+                                    "(keep that app running to use them).")
+        else:
+            self.voice_hint.setText("Want more voices? Install VOICEVOX (free; on Arch: the AUR package "
+                                    "“voicevox”), keep it running, then press ↻ — it adds dozens of "
+                                    "Japanese voices.")
 
     def _apply(self):
         c = self.cfg
@@ -140,10 +189,13 @@ class SettingsDialog(QDialog):
         c.tesseract_cmd = self.tesseract.text().strip()
         c.ocr_min_confidence = self.min_conf.value()
         c.translator = self.translator.currentData()
-        c.tts_engine = self.tts_engine.currentData()
-        c.tts_voice = self.voice.currentData()
+        c.voice = self.voice.currentData() or c.voice
+        c.hearing_voices = [self.hearing.item(i).data(Qt.ItemDataRole.UserRole)
+                            for i in range(self.hearing.count())
+                            if self.hearing.item(i).checkState() == Qt.CheckState.Checked]
         c.dictionary = self.dictionary.currentData()
         c.theme = self.theme.currentData()
+        c.lookup_key = self.lookup_key.currentData()
         c.anthropic_api_key = self.api_key.text().strip()
         c.story_model = self.story_model.text().strip() or "claude-haiku-5-5"
         c.japanese_font_size = self.ja_size.value()

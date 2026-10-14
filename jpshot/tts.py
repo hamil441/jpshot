@@ -1,10 +1,22 @@
-"""Japanese text-to-speech with adjustable speed (edge-tts neural voices, gTTS fallback)."""
+"""Japanese text-to-speech with adjustable speed and a library of voices.
+
+Voice ids are "<engine>:<name>":
+  edge:ja-JP-NanamiNeural   Microsoft neural voices via edge-tts (online)
+  gtts:ja                   Google Translate's voice (online)
+  voicevox:<style id>       VOICEVOX — dozens of free Japanese character voices; detected
+                            automatically while the VOICEVOX app/engine runs (port 50021)
+  aivis:<style id>          AivisSpeech — same API, port 10101
+"""
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import logging
+import os
 import tempfile
+import threading
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QUrl, Signal
@@ -15,6 +27,69 @@ from .workers import run_async
 log = logging.getLogger("jpshot.tts")
 
 CACHE_DIR = Path(tempfile.gettempdir()) / "jpshot-tts"
+LOCAL_ENGINES = {
+    "voicevox": ("VOICEVOX", os.environ.get("JPSHOT_VOICEVOX_URL", "http://127.0.0.1:50021")),
+    "aivis": ("AivisSpeech", os.environ.get("JPSHOT_AIVIS_URL", "http://127.0.0.1:10101")),
+}
+BUILTIN_VOICES = [
+    ("edge:ja-JP-NanamiNeural", "Nanami (Microsoft, female)"),
+    ("edge:ja-JP-KeitaNeural", "Keita (Microsoft, male)"),
+    ("gtts:ja", "Google Translate voice"),
+]
+DEFAULT_VOICE = "edge:ja-JP-NanamiNeural"
+
+
+@dataclass
+class Voice:
+    id: str
+    name: str
+    engine: str
+
+
+_voices_cache: tuple[float, list[Voice]] | None = None
+_voices_lock = threading.Lock()
+
+
+def available_voices(refresh: bool = False) -> list[Voice]:
+    """Built-in voices plus every voice of any local VOICEVOX/AivisSpeech engine that's running."""
+    global _voices_cache
+    with _voices_lock:
+        if _voices_cache and not refresh and time.time() - _voices_cache[0] < 60:
+            return _voices_cache[1]
+        import requests
+
+        voices = [Voice(i, n, i.split(":")[0]) for i, n in BUILTIN_VOICES]
+        for engine, (label, url) in LOCAL_ENGINES.items():
+            try:
+                r = requests.get(f"{url}/speakers", timeout=0.8)
+                r.raise_for_status()
+                n = 0
+                for sp in r.json():
+                    for st in sp.get("styles", []):
+                        if st.get("type", "talk") != "talk":
+                            continue
+                        voices.append(Voice(f"{engine}:{st['id']}", f"{label}: {sp['name']}（{st['name']}）", engine))
+                        n += 1
+                log.info("%s detected at %s: %d voices", label, url, n)
+            except Exception as e:  # noqa: BLE001
+                log.debug("%s not running at %s (%s)", label, url, type(e).__name__)
+        _voices_cache = (time.time(), voices)
+        return voices
+
+
+def voice_name(voice_id: str) -> str:
+    for v in available_voices():
+        if v.id == voice_id:
+            return v.name
+    return voice_id
+
+
+def normalize_voice(voice_id: str) -> str:
+    if not voice_id:
+        return DEFAULT_VOICE
+    if ":" not in voice_id:            # old config: a bare edge voice name
+        return f"edge:{voice_id}"
+    return voice_id
 
 
 def _edge(text: str, voice: str, speed: float, path: Path) -> None:
@@ -28,29 +103,64 @@ def _edge(text: str, voice: str, speed: float, path: Path) -> None:
     asyncio.run(go())
 
 
-def synthesize(text: str, speed: float, engine: str, voice: str) -> tuple[Path, float]:
-    """Return (mp3 path, playback rate to apply)."""
+def _local_engine(engine: str, style: str, text: str, speed: float, path: Path) -> None:
+    import requests
+
+    url = LOCAL_ENGINES[engine][1]
+    q = requests.post(f"{url}/audio_query", params={"text": text, "speaker": style}, timeout=30)
+    q.raise_for_status()
+    query = q.json()
+    query["speedScale"] = speed
+    r = requests.post(f"{url}/synthesis", params={"speaker": style}, json=query, timeout=60)
+    r.raise_for_status()
+    path.write_bytes(r.content)
+
+
+def _cached(path: Path) -> bool:
+    return path.exists() and path.stat().st_size > 0
+
+
+def synthesize(text: str, speed: float, voice_id: str) -> tuple[Path, float]:
+    """Return (audio file, playback rate to apply). Falls back to another voice on failure."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    voice_id = normalize_voice(voice_id)
+    engine, _, name = voice_id.partition(":")
+    key = hashlib.sha1(f"{voice_id}|{speed:.2f}|{text}".encode()).hexdigest()
+
     if engine == "edge":
-        key = hashlib.sha1(f"edge|{voice}|{speed:.2f}|{text}".encode()).hexdigest()
         path = CACHE_DIR / f"{key}.mp3"
-        if path.exists() and path.stat().st_size:
-            log.debug("TTS cache hit %s", path.name)
+        if _cached(path):
             return path, 1.0
-        log.debug("edge-tts voice=%s speed=%.2f text=%r", voice, speed, text)
+        log.debug("edge-tts voice=%s speed=%.2f text=%r", name, speed, text)
         tmp = path.with_suffix(".part")
         try:
-            _edge(text, voice, speed, tmp)
+            _edge(text, name, speed, tmp)
             tmp.replace(path)
             return path, 1.0
         except Exception as e:  # noqa: BLE001
-            log.warning("edge-tts failed (%s); falling back to gTTS", e)
+            log.warning("edge-tts failed (%s); falling back to Google voice", e)
+            return synthesize(text, speed, "gtts:ja")
+
+    if engine in LOCAL_ENGINES:
+        path = CACHE_DIR / f"{key}.wav"
+        if _cached(path):
+            return path, 1.0
+        log.debug("%s style=%s speed=%.2f text=%r", engine, name, speed, text)
+        tmp = path.with_suffix(".part")
+        try:
+            _local_engine(engine, name, text, speed, tmp)
+            tmp.replace(path)
+            return path, 1.0
+        except Exception as e:  # noqa: BLE001
+            log.warning("%s failed (%s) — is it running? Falling back to %s",
+                        LOCAL_ENGINES[engine][0], e, DEFAULT_VOICE)
+            return synthesize(text, speed, DEFAULT_VOICE)
 
     from gtts import gTTS
 
     key = hashlib.sha1(f"gtts|{text}".encode()).hexdigest()
     path = CACHE_DIR / f"{key}.mp3"
-    if not (path.exists() and path.stat().st_size):
+    if not _cached(path):
         tmp = path.with_suffix(".part")
         log.debug("gTTS text=%r", text)
         gTTS(text=text, lang="ja").save(str(tmp))
@@ -88,7 +198,7 @@ class Speaker(QObject):
         self.player.stop()
         self._loading = True
         self.state_changed.emit("loading")
-        run_async(synthesize, text, speed, self.cfg.tts_engine, self.cfg.tts_voice,
+        run_async(synthesize, text, speed, self.cfg.voice,
                   on_done=lambda res: self._ready(req, res, fraction),
                   on_error=lambda msg: self._failed(req, msg))
 

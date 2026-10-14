@@ -43,6 +43,8 @@ class Config:
     tts_engine: str = "edge"
     tts_voice: str = "ja-JP-NanamiNeural"   # or ja-JP-KeitaNeural
     tts_speed: float = 1.0
+    voice: str = ""                  # voice id, e.g. edge:ja-JP-NanamiNeural or voicevox:3
+    hearing_voices: list = field(default_factory=list)   # voice ids for Hearing cards; [] = all
 
     # Dictionary: "auto" (offline JMdict via jamdict if installed, else jisho.org),
     # "jamdict" or "jisho"
@@ -50,7 +52,9 @@ class Config:
 
     # Look & layout
     theme: str = "system"            # system | light | dark
-    grammar_mode: bool = False       # color words by part of speech, hover explains
+    grammar_mode: bool = False       # color words by part of speech
+    show_image: bool = True          # screenshot panel beside the text
+    lookup_key: str = "shift"        # hold this over a word for the popup: shift | ctrl | alt | meta
     japanese_font_size: int = 20
     english_font_size: int = 13
     # Which rows the result window shows, in order
@@ -67,6 +71,9 @@ class Config:
     anki_tags: str = "jpshot"
     anki_field_map: dict = field(default_factory=dict)   # note type -> {field name: content key}
     anki_audio: bool = True
+    anki_reading: bool = True        # JPShot card type: make a Reading card
+    anki_hearing: bool = False       # ... and/or a Hearing card
+    anki_random_font: bool = True
 
     @classmethod
     def path(cls) -> Path:
@@ -87,6 +94,8 @@ class Config:
                 print(f"[jpshot] could not read config: {e}", file=sys.stderr)
         else:
             cfg.save()
+        if not cfg.voice:  # migrate from tts_engine/tts_voice
+            cfg.voice = "gtts:ja" if cfg.tts_engine == "gtts" else f"edge:{cfg.tts_voice or 'ja-JP-NanamiNeural'}"
         return cfg
 
     def save(self) -> None:
