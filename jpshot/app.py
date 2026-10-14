@@ -72,7 +72,9 @@ class JPShotApp(QObject):
         self.speaker = Speaker(cfg)
         from . import lookupkey
         lookupkey.set_key(cfg.lookup_key)
-        self.result = ResultWindow(cfg, self.dictionary, self.speaker)
+        from .known import KnownWords
+        self.known = KnownWords()
+        self.result = ResultWindow(cfg, self.dictionary, self.speaker, self.known)
         self.result.settings_requested.connect(self.open_settings)
         self.result.theme_toggled.connect(self.toggle_theme)
         self.result.mine_requested.connect(self.open_mine)
@@ -86,6 +88,8 @@ class JPShotApp(QObject):
         self._setup_tray()
         self._setup_hotkey()
         QTimer.singleShot(0, self._warm_up)
+        if cfg.known_sync:
+            QTimer.singleShot(1500, lambda: self.sync_known(quiet=True))
 
     # -- setup ------------------------------------------------------------
     def _warm_up(self):
@@ -175,7 +179,7 @@ class JPShotApp(QObject):
     # -- settings / theme ---------------------------------------------------
     def open_settings(self):
         if self.settings_dialog is None:
-            self.settings_dialog = SettingsDialog(self.cfg)
+            self.settings_dialog = SettingsDialog(self.cfg, self.known, self.sync_known)
             self.settings_dialog.applied.connect(self.apply_settings)
         else:
             self.settings_dialog.sync_sections()
@@ -192,6 +196,23 @@ class JPShotApp(QObject):
         self.result.apply_settings()
         if self.cfg.hotkey != old_hotkey:
             self._setup_hotkey()
+
+    def sync_known(self, quiet: bool = False, done=None):
+        fields = [f for f in self.cfg.known_fields.split(",")]
+
+        def ok(n):
+            log.info("Known words: %d from Anki (%d total)", n, self.known.total())
+            self.result.known_changed()
+            if done:
+                done(f"Synced {n} words from Anki · {self.known.total()} known in total")
+
+        def fail(msg):
+            (log.debug if quiet else log.warning)("Known-word sync skipped: %s", msg)
+            if done:
+                done(f"Sync failed: {msg.split(': ', 1)[-1]}")
+
+        run_async(self.known.sync_from_anki, self.cfg.anki_url, self.cfg.known_query, fields,
+                  on_done=ok, on_error=fail)
 
     def _apply_story_settings(self):
         k = self.dictionary.kanji

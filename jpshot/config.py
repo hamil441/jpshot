@@ -69,6 +69,12 @@ class Config:
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen2.5:7b"
 
+    # Known words: synced from reviewed (not new) Anki notes and/or marked by hand (K in the popup)
+    known_sync: bool = True          # sync from Anki at start-up (when Anki is running)
+    known_query: str = ""            # Anki search to limit which notes count, e.g. deck:Japanese
+    known_fields: str = "Word, Vocabulary-Kanji, Expression, Vocab, VocabKanji, Kanji, Front"
+    furigana_unknown_only: bool = False   # Furigana row: readings only over kanji you don't know
+
     # Anki (via the AnkiConnect add-on)
     anki_url: str = "http://127.0.0.1:8765"
     anki_deck: str = ""

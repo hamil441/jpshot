@@ -7,7 +7,8 @@ from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
                                QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-                               QListWidgetItem, QPushButton, QSpinBox, QToolButton, QVBoxLayout)
+                               QListWidgetItem, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox,
+                               QToolButton, QVBoxLayout, QWidget, QFrame)
 
 from .config import ALL_SECTIONS, Config
 from .workers import run_async
@@ -34,9 +35,11 @@ def _combo(options, current):
 class SettingsDialog(QDialog):
     applied = Signal()  # emitted after config is saved
 
-    def __init__(self, cfg: Config, parent=None):
+    def __init__(self, cfg: Config, known=None, sync_fn=None, parent=None):
         super().__init__(parent)
         self.cfg = cfg
+        self.known = known
+        self.sync_fn = sync_fn
         self.setWindowTitle("JPShot settings")
         self.setMinimumWidth(460)
 
@@ -113,6 +116,35 @@ class SettingsDialog(QDialog):
         expl.setStyleSheet("color:gray")
         f.addRow(expl)
 
+        # -- Known words -------------------------------------------------------
+        kw = QGroupBox("Known words")
+        f = QFormLayout(kw)
+        self.known_sync = QCheckBox("Sync from Anki at start-up (reviewed cards only)")
+        self.known_sync.setChecked(bool(cfg.known_sync))
+        f.addRow(self.known_sync)
+        self.known_query = QLineEdit(cfg.known_query)
+        self.known_query.setPlaceholderText("all decks — or e.g. deck:Japanese")
+        f.addRow("Anki search", self.known_query)
+        self.known_fields = QLineEdit(cfg.known_fields)
+        self.known_fields.setToolTip("Note fields that hold a single word (comma-separated)")
+        f.addRow("Word fields", self.known_fields)
+        sync_row = QHBoxLayout()
+        sync_btn = QPushButton("Sync now")
+        sync_btn.clicked.connect(self._sync_now)
+        self.sync_status = QLabel(f"{known.total()} known words" if known else "")
+        self.sync_status.setStyleSheet("color:gray")
+        sync_row.addWidget(sync_btn)
+        sync_row.addWidget(self.sync_status, 1)
+        f.addRow(sync_row)
+        self.known_kanji = QPlainTextEdit(known.extra_kanji if known else "")
+        self.known_kanji.setFixedHeight(54)
+        self.known_kanji.setPlaceholderText("Paste kanji you know (e.g. your RTK progress) — "
+                                            "kanji in known words count automatically")
+        f.addRow("Known kanji", self.known_kanji)
+        self.furi_unknown = QCheckBox("Furigana only over kanji I don't know")
+        self.furi_unknown.setChecked(bool(cfg.furigana_unknown_only))
+        f.addRow(self.furi_unknown)
+
         # -- Look -----------------------------------------------------------
         look = QGroupBox("Appearance")
         f = QFormLayout(look)
@@ -159,11 +191,27 @@ class SettingsDialog(QDialog):
 
         self._load_voices()
 
+        inner = QWidget()
+        il = QVBoxLayout(inner)
+        for g in (cap, svc, story, kw, look):
+            il.addWidget(g)
+        il.addWidget(note)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(inner)
         lay = QVBoxLayout(self)
-        for g in (cap, svc, story, look):
-            lay.addWidget(g)
-        lay.addWidget(note)
+        lay.addWidget(scroll, 1)
         lay.addLayout(bottom)
+        self.resize(560, 760)
+
+    def _sync_now(self):
+        if self.sync_fn is None:
+            return
+        self.cfg.known_query = self.known_query.text().strip()
+        self.cfg.known_fields = self.known_fields.text().strip()
+        self.sync_status.setText("Syncing…")
+        self.sync_fn(quiet=False, done=self.sync_status.setText)
 
     def _load_voices(self, refresh=False):
         from .tts import available_voices
@@ -207,6 +255,12 @@ class SettingsDialog(QDialog):
         c.dictionary = self.dictionary.currentData()
         c.theme = self.theme.currentData()
         c.lookup_key = self.lookup_key.currentData()
+        c.known_sync = self.known_sync.isChecked()
+        c.known_query = self.known_query.text().strip()
+        c.known_fields = self.known_fields.text().strip()
+        c.furigana_unknown_only = self.furi_unknown.isChecked()
+        if self.known is not None and self.known.extra_kanji != self.known_kanji.toPlainText().strip():
+            self.known.set_extra_kanji(self.known_kanji.toPlainText())
         c.anthropic_api_key = self.api_key.text().strip()
         c.story_provider = self.provider.currentData()
         c.ollama_model = self.ollama_model.text().strip() or "qwen2.5:7b"

@@ -58,6 +58,8 @@ class _Canvas(QWidget):
         self.hover_lookup = False
         self.color_fn = grammar.color_for
         self.pitch_fn = None   # tok -> [high?, …] per sound, in pitch mode
+        self.known_kanji: set[str] = set()
+        self.unknown_only = False   # readings only over kanji not in known_kanji
 
     # -- layout -----------------------------------------------------------
     def set_fonts(self, base: QFont):
@@ -87,7 +89,7 @@ class _Canvas(QWidget):
                     x += fb.horizontalAdvance(tok.space_before)
                 segs = []
                 sx = 0
-                for base, ruby in self._split(tok):
+                for base, ruby in self._split(tok, self.known_kanji if self.unknown_only else None):
                     w = max(fb.horizontalAdvance(base), fr.horizontalAdvance(ruby) if ruby else 0)
                     segs.append(_Seg(base, ruby, sx, w))
                     sx += w
@@ -100,11 +102,13 @@ class _Canvas(QWidget):
         self.update()
 
     @staticmethod
-    def _split(tok: Token) -> list[tuple[str, str]]:
+    def _split(tok: Token, known: set[str] | None = None) -> list[tuple[str, str]]:
         if not tok.reading or not japanese.has_kanji(tok.surface):
             return [(tok.surface, "")]
         prefix, core, rcore, suffix = japanese.furigana_parts(tok.surface, tok.reading)
         if not rcore:
+            return [(tok.surface, "")]
+        if known is not None and all(c in known for c in core if japanese.has_kanji(c)):
             return [(tok.surface, "")]
         return [(t, r) for t, r in ((prefix, ""), (core, rcore), (suffix, "")) if t]
 
@@ -323,6 +327,10 @@ class FuriganaView(QScrollArea):
 
     def refresh_colors(self):
         self.canvas.update()
+
+    def set_known_kanji(self, kanji: set[str], unknown_only: bool):
+        self.canvas.known_kanji, self.canvas.unknown_only = set(kanji), unknown_only
+        self.canvas.relayout()
 
     def set_colors(self, on: bool):
         self.canvas.colored = on

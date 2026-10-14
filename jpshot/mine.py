@@ -292,6 +292,9 @@ class MineDialog(QDialog):
         self.audio.setChecked(bool(cfg.anki_audio))
 
         self.dup = QCheckBox("Allow duplicates")
+        self.dup_warning = QLabel()
+        self.dup_warning.setWordWrap(True)
+        self.dup_warning.hide()
 
         self.add_btn = QPushButton("Add card")
         self.add_btn.setDefault(True)
@@ -312,6 +315,7 @@ class MineDialog(QDialog):
         inner = QWidget()
         lay = QVBoxLayout(inner)
         lay.addWidget(target)
+        lay.addWidget(self.dup_warning)
         lay.addWidget(self.jps_box)
         lay.addWidget(self.map_box)
         lay.addWidget(content)
@@ -357,10 +361,39 @@ class MineDialog(QDialog):
         self._model_changed(self.model.currentText())
         self.add_btn.setEnabled(bool(info["decks"] and info["models"]))
         self.new_deck_btn.setEnabled(True)
+        self.deck.currentTextChanged.connect(lambda _t: self._check_duplicates())
+        self._check_duplicates()
         self.jps_btn.setEnabled(True)
         if self._select_deck_after_load:
             self.deck.setCurrentText(self._select_deck_after_load)
             self._select_deck_after_load = ""
+
+    def _check_duplicates(self):
+        """Warn if the word or sentence is already in the chosen deck."""
+        deck = self.deck.currentText()
+        word = self.text_edits["word"].toPlainText().strip()
+        sentence = self.text_edits["japanese"].toPlainText().strip().replace("\n", "")
+        if not deck or not (word or sentence):
+            return
+
+        def find():
+            hits = {}
+            for label, text in (("word", word), ("sentence", sentence[:40])):
+                if text:
+                    q = f'deck:"{deck}" "{text.replace(chr(34), "")}"'
+                    hits[label] = len(anki.invoke(self.cfg.anki_url, "findNotes", query=q))
+            return hits
+
+        def show(hits):
+            msgs = []
+            if hits.get("word"):
+                msgs.append(f"“{html.escape(word)}” is already in {hits['word']} card(s) in this deck")
+            if hits.get("sentence"):
+                msgs.append(f"this sentence is already in {hits['sentence']} card(s)")
+            self.dup_warning.setText("<span style='color:#e8a33d'>⚠ " + "; ".join(msgs) + "</span>" if msgs else "")
+            self.dup_warning.setVisible(bool(msgs))
+
+        run_async(find, on_done=show, on_error=lambda _m: None)
 
     def _new_deck(self):
         name, ok = QInputDialog.getText(self, "New Anki deck",

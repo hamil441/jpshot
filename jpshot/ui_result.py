@@ -32,6 +32,7 @@ JP_FONTS = ["Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic UI", "Meiryo", "Hirag
             "Hiragino Kaku Gothic ProN", "MS Gothic", "IPAexGothic", "TakaoPGothic"]
 SECTION_TITLES = {"english": "English", "japanese": "日本語", "furigana": "Furigana",
                   "hiragana": "ひらがな", "romaji": "Rōmaji"}
+UNKNOWN_COLOR, KNOWN_COLOR = "#e8556d", "#8e9099"
 CHIP_LABELS = {"english": "English\n英語", "japanese": "Japanese\n日本語", "furigana": "Furigana\nふりがな",
                "hiragana": "Hiragana\nひらがな", "romaji": "Rōmaji\nローマ字"}
 RENDER_MODE = {"japanese": "original", "furigana": "furigana", "hiragana": "hiragana", "romaji": "romaji"}
@@ -243,6 +244,13 @@ class Section(QWidget):
 # ---------------------------------------------------------------------------
 class DictionaryPopup(QFrame):
     play_requested = Signal()
+    link_requested = Signal(str)
+
+    def _link(self, href: str):
+        if href == "play":
+            self.play_requested.emit()
+        else:
+            self.link_requested.emit(href)
 
     def __init__(self):
         super().__init__(None, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
@@ -255,7 +263,7 @@ class DictionaryPopup(QFrame):
         self.label.setFont(jp_font(11))
         self.label.setMaximumWidth(460)
         self.label.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse)
-        self.label.linkActivated.connect(lambda href: href == "play" and self.play_requested.emit())
+        self.label.linkActivated.connect(self._link)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(12, 10, 12, 10)
         lay.addWidget(self.label)
@@ -312,9 +320,13 @@ class ResultWindow(QWidget):
     theme_toggled = Signal()
     mine_requested = Signal()
 
-    def __init__(self, cfg, dictionary, speaker):
+    def __init__(self, cfg, dictionary, speaker, known=None):
         super().__init__(None, Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
         self.cfg, self.dictionary, self.speaker = cfg, dictionary, speaker
+        if known is None:
+            from .known import KnownWords
+            known = KnownWords()
+        self.known = known
         self.setWindowTitle("JPShot")
         self.setStyleSheet(CSS)
         self.resize(940, 640)
@@ -338,6 +350,7 @@ class ResultWindow(QWidget):
 
         self.popup = DictionaryPopup()
         self.popup.play_requested.connect(self._play_word)
+        self.popup.link_requested.connect(self._popup_link)
 
         # sections, stacked in a splitter so rows can be resized
         self.sections: dict[str, Section] = {}
@@ -388,6 +401,9 @@ class ResultWindow(QWidget):
         root.addLayout(foot)
 
         self.sections["english"].view.set_content = self._english_setter(self.sections["english"].view)
+        fv = self.sections["furigana"].view
+        if isinstance(fv, FuriganaView):
+            fv.set_known_kanji(self.known.known_kanji(), bool(self.cfg.furigana_unknown_only))
         self._apply_section_visibility()
         self._apply_color_mode()
         self._update_image_visibility()
@@ -404,6 +420,7 @@ class ResultWindow(QWidget):
         QShortcut(QKeySequence("]"), self, lambda: self.speed.setValue(self.speed.value() + 10))
         QShortcut(QKeySequence("Ctrl+Shift+C"), self, self._copy_image)
         QShortcut(QKeySequence("W"), self, self._play_word)
+        QShortcut(QKeySequence("K"), self, self._toggle_known)
         QShortcut(QKeySequence("Ctrl+,"), self, self.settings_requested.emit)
         QShortcut(QKeySequence("Ctrl+M"), self, lambda: self.mine_btn.isEnabled() and self.mine_requested.emit())
 
@@ -441,7 +458,8 @@ class ResultWindow(QWidget):
                 ("grammar", "Grammar", "Alt+G", "Color words by part of speech"),
                 ("pitch", "Pitch", "Alt+P", "Color words by pitch accent: blue heiban, red atamadaka, "
                                             "orange nakadaka, green odaka"),
-                ("difficulty", "Difficulty", "Alt+D", "Color words from easy (green) to hard (red)")):
+                ("difficulty", "Difficulty", "Alt+D", "Color words from easy (green) to hard (red)"),
+                ("known", "Known", "Alt+N", "Highlight words you don't know yet (K marks a word known)")):
             b = QToolButton()
             b.setObjectName("chip")
             b.setText(label)
@@ -455,6 +473,10 @@ class ResultWindow(QWidget):
         self.diff_label.setTextFormat(Qt.TextFormat.RichText)
         bar.addSpacing(8)
         bar.addWidget(self.diff_label)
+        self.known_label = QLabel()
+        self.known_label.setTextFormat(Qt.TextFormat.RichText)
+        bar.addSpacing(6)
+        bar.addWidget(self.known_label)
         bar.addStretch()
         self.mine_btn = QToolButton()
         self.mine_btn.setText("⛏ Mine")
@@ -584,6 +606,7 @@ class ResultWindow(QWidget):
         self._apply_color_mode()
         lookupkey.set_key(self.cfg.lookup_key)
         self._update_hint()
+        self.known_changed()
         self.update_theme_button()
         self.setStyleSheet("")
         self.setStyleSheet(CSS)
@@ -605,10 +628,12 @@ class ResultWindow(QWidget):
             return pitch.word_color
         if mode == "difficulty":
             return lambda tok: difficulty.word_color(self.difficulty, tok)
+        if mode == "known":
+            return self._known_color
         return grammar.color_for
 
     def _apply_color_mode(self):
-        mode = self.cfg.color_mode if self.cfg.color_mode in ("grammar", "pitch", "difficulty") else "none"
+        mode = self.cfg.color_mode if self.cfg.color_mode in ("grammar", "pitch", "difficulty", "known") else "none"
         for m, b in self.color_btns.items():
             b.setChecked(m == mode)
         self._update_legend()
@@ -632,6 +657,11 @@ class ResultWindow(QWidget):
             text = grammar.legend_html()
         elif mode == "difficulty":
             text = difficulty.legend_html()
+        elif mode == "known":
+            text = (f"<span style='color:{UNKNOWN_COLOR}'>■</span> new to you  "
+                    f"<span style='color:{KNOWN_COLOR}'>■</span> known  ·  "
+                    f"<span style='color:gray'>hold Shift on a word and press K to mark it known/unknown "
+                    f"· {self.known.total()} known words</span>")
         else:
             text = ""
         self.legend.setText(text)
@@ -763,6 +793,7 @@ class ResultWindow(QWidget):
             t, spans = japanese.render(self.ja_lines, mode)
             view.set_content(t, spans)
         self.play_btn.setEnabled(bool(text.strip()))
+        self._update_known_badge()
         self._diff_req += 1
         self.difficulty = None
         if text.strip():
@@ -843,7 +874,7 @@ class ResultWindow(QWidget):
         except Exception:  # noqa: BLE001
             log.exception("Grammar analysis failed for %r", tok.surface)
             gram = ""
-        extra = pitch.pattern_html(tok)
+        extra = self._known_line(tok) + pitch.pattern_html(tok)
         lvl = difficulty.word_level(self.difficulty, tok)
         if lvl:
             extra += f"<div style='color:gray;font-size:9pt'>word difficulty ≈{lvl}</div>"
@@ -854,6 +885,60 @@ class ResultWindow(QWidget):
         if any(kanji.is_kanji(c) for c in tok.surface + tok.base):
             self.dictionary.lookup_kanji(self._lookup_req, tok.surface if japanese.has_kanji(tok.surface)
                                          else tok.base, tok.candidates())
+
+    # -- known words --------------------------------------------------------
+    def _known_color(self, tok):
+        if not self.known.counts(tok):
+            return None
+        return KNOWN_COLOR if self.known.is_known(tok) else UNKNOWN_COLOR
+
+    def _update_known_badge(self):
+        if not self.ja_text.strip():
+            self.known_label.setText("")
+            return
+        unknown = self.known.unknown_words(self.ja_lines)
+        n = len(unknown)
+        if n == 0:
+            text = "<span style='color:#2fb383'>all known</span>"
+        elif n == 1:
+            text = "<span style='color:#2fb383'><b>i+1</b> ✓</span>"
+        else:
+            text = f"<span style='color:gray'>{n} new</span>"
+        self.known_label.setText(text)
+        tip = ("i+1: exactly one new word — a great sentence to mine.\n" if n == 1 else "")
+        self.known_label.setToolTip(tip + ("New to you: " + "、".join(t.base for t in unknown[:15])
+                                           if unknown else "You know every word in this sentence"))
+
+    def known_changed(self):
+        """Known words changed (sync or K): refresh badge, colors, furigana and legend."""
+        self._update_known_badge()
+        fv = self.sections["furigana"].view
+        if isinstance(fv, FuriganaView):
+            fv.set_known_kanji(self.known.known_kanji(), bool(self.cfg.furigana_unknown_only))
+        if self.cfg.color_mode == "known":
+            for key, sec in self.sections.items():
+                if key in RENDER_MODE:
+                    sec.view.refresh_colors()
+            self._update_legend()
+
+    def _toggle_known(self):
+        c = self._lookup_ctx
+        if not c or not self.popup.isVisible() or c["tok"].pos == "english":
+            return
+        state = self.known.toggle(c["tok"])
+        self.status.setText(f"Marked {c['tok'].base} as {'known' if state else 'new'}")
+        c["extra"] = self._known_line(c["tok"]) + c.get("extra", "").split("<!--known-->", 1)[-1]
+        self._render_popup()
+        self.known_changed()
+
+    def _known_line(self, tok) -> str:
+        if not self.known.counts(tok):
+            return "<!--known-->"
+        if self.known.is_known(tok):
+            link = "<a href='known' style='color:#2fb383;text-decoration:none'>✓ known</a>"
+        else:
+            link = "<a href='known' style='color:#e8556d;text-decoration:none'>＋ mark as known</a>"
+        return f"<div style='font-size:9pt'>{link} <span style='color:gray'>(K)</span></div><!--known-->"
 
     def _difficulty_done(self, req_id, d):
         if req_id != self._diff_req:
@@ -867,8 +952,11 @@ class ResultWindow(QWidget):
             for key, sec in self.sections.items():
                 if key in RENDER_MODE:
                     sec.view.refresh_colors()
+        new = len(self.known.unknown_words(self.ja_lines))
+        personal = (f"\nFor you: {new} word{'s' if new != 1 else ''} you haven't marked known"
+                    if self.known.total() else "")
         self.diff_label.setToolTip(f"Estimated difficulty: {d.label} (≈JLPT {d.jlpt})\n• "
-                                   + "\n• ".join(d.reasons))
+                                   + "\n• ".join(d.reasons) + personal)
 
     def _render_popup(self):
         c = self._lookup_ctx
@@ -1001,6 +1089,20 @@ class ResultWindow(QWidget):
         self.cfg.save()
         log.info("Speech speed -> %.2f×", self.cfg.tts_speed)
         self.speaker.change_speed(self.cfg.tts_speed)
+
+    def _popup_link(self, href: str):
+        if href == "known":
+            self._toggle_known()
+        elif href.startswith("strokes:"):
+            self._show_strokes(href.split(":", 1)[1])
+        elif href.startswith("pattern:"):
+            self._show_pattern(href.split(":", 1)[1])
+
+    def _show_strokes(self, ch: str):
+        pass   # (stroke-order window — added below)
+
+    def _show_pattern(self, pid: str):
+        pass   # (grammar patterns — added below)
 
     def _play_word(self):
         c = self._lookup_ctx
