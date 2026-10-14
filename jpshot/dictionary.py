@@ -211,9 +211,9 @@ class Dictionary(QObject):
                     break
             payload = {"infos": infos, "word": word,
                        "word_story": template_word_story(word, meaning, infos),
-                       "hint": not self.kanji.has_writer()}
+                       "hint": getattr(self.kanji, "explanations", True) and not self.kanji.has_writer()}
             self.kanji_finished.emit(req_id, payload)
-            if infos and self.kanji.has_writer():
+            if infos and getattr(self.kanji, "explanations", True) and self.kanji.has_writer():
                 self._story_exec.submit(stories, payload, reading, meaning)
 
         def stories(payload, reading, meaning):

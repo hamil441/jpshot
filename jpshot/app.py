@@ -88,7 +88,7 @@ class JPShotApp(QObject):
         self._setup_tray()
         self._setup_hotkey()
         QTimer.singleShot(0, self._warm_up)
-        if cfg.known_sync:
+        if cfg.known_sync and "known" in cfg.features:
             QTimer.singleShot(1500, lambda: self.sync_known(quiet=True))
 
     # -- setup ------------------------------------------------------------
@@ -218,7 +218,9 @@ class JPShotApp(QObject):
 
     def _apply_story_settings(self):
         k = self.dictionary.kanji
-        k.provider = self.cfg.story_provider
+        on = "explanations" in self.cfg.features or "ask" in self.cfg.features
+        k.provider = self.cfg.story_provider if on else "none"
+        k.explanations = "explanations" in self.cfg.features
         k.api_key = self.cfg.anthropic_api_key.strip()
         k.story_model = self.cfg.story_model.strip() or "claude-haiku-5-5"
         k.ollama_url = self.cfg.ollama_url.strip().rstrip("/") or "http://127.0.0.1:11434"

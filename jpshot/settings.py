@@ -80,6 +80,7 @@ class SettingsDialog(QDialog):
         self.hearing.setFixedHeight(120)
         self.hearing.setToolTip("Hearing cards use a random voice from the ticked ones (none ticked = all)")
         f.addRow("Hearing-card voices", self.hearing)
+        self._svc_form = f
         self.voice_hint = QLabel()
         self.voice_hint.setWordWrap(True)
         self.voice_hint.setStyleSheet("color:gray")
@@ -193,7 +194,29 @@ class SettingsDialog(QDialog):
 
         inner = QWidget()
         il = QVBoxLayout(inner)
-        for g in (cap, svc, story, kw, look):
+        # -- Selectable features ------------------------------------------------
+        from .features import BASICS, FEATURES
+
+        feats = QGroupBox("Selectable features")
+        fl = QVBoxLayout(feats)
+        basics = QLabel(f"<b>Always on:</b> {BASICS}.")
+        basics.setWordWrap(True)
+        basics.setStyleSheet("color:gray")
+        fl.addWidget(basics)
+        self.feature_boxes: dict[str, QCheckBox] = {}
+        for key, label, desc in FEATURES:
+            cb = QCheckBox(label)
+            cb.setChecked(key in (cfg.features or []))
+            cb.toggled.connect(self._feature_visibility)
+            d = QLabel(desc)
+            d.setWordWrap(True)
+            d.setStyleSheet("color:gray; margin-left: 22px")
+            fl.addWidget(cb)
+            fl.addWidget(d)
+            self.feature_boxes[key] = cb
+        self.story_group, self.known_group = story, kw
+
+        for g in (cap, svc, story, kw, look, feats):
             il.addWidget(g)
         il.addWidget(note)
         scroll = QScrollArea()
@@ -204,6 +227,16 @@ class SettingsDialog(QDialog):
         lay.addWidget(scroll, 1)
         lay.addLayout(bottom)
         self.resize(560, 760)
+        self._feature_visibility()
+
+    def _feature_visibility(self, *_):
+        on = {k for k, cb in self.feature_boxes.items() if cb.isChecked()}
+        self.story_group.setVisible(bool(on & {"explanations", "ask"}))
+        self.known_group.setVisible("known" in on)
+        try:
+            self._svc_form.setRowVisible(self.hearing, "anki" in on)
+        except AttributeError:   # Qt < 6.4
+            self.hearing.setVisible("anki" in on)
 
     def _sync_now(self):
         if self.sync_fn is None:
@@ -255,6 +288,7 @@ class SettingsDialog(QDialog):
         c.dictionary = self.dictionary.currentData()
         c.theme = self.theme.currentData()
         c.lookup_key = self.lookup_key.currentData()
+        c.features = [k for k, cb in self.feature_boxes.items() if cb.isChecked()]
         c.known_sync = self.known_sync.isChecked()
         c.known_query = self.known_query.text().strip()
         c.known_fields = self.known_fields.text().strip()

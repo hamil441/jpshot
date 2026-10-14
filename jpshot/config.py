@@ -50,6 +50,9 @@ class Config:
     # "jamdict" or "jisho"
     dictionary: str = "auto"
 
+    # Optional feature sets that are switched on (see features.py); the basics are always on
+    features: list = field(default_factory=list)
+
     # Look & layout
     theme: str = "system"            # system | light | dark
     grammar_mode: bool = False       # (old setting, replaced by color_mode)

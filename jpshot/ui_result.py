@@ -19,7 +19,7 @@ from PySide6.QtGui import (QClipboard, QColor, QCursor, QFont, QGuiApplication, 
 from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QSlider,
                                QSplitter, QTextEdit, QToolButton, QVBoxLayout, QWidget)
 
-from . import difficulty, grammar, japanese, kanji, lookupkey, patterns, pitch, theme, translate
+from . import difficulty, features, grammar, japanese, kanji, lookupkey, patterns, pitch, theme, translate
 from .furigana_view import FuriganaView
 from .image_view import ImageView
 from .config import ALL_SECTIONS
@@ -472,6 +472,7 @@ class ResultWindow(QWidget):
         self._apply_section_visibility()
         self._apply_color_mode()
         self._update_image_visibility()
+        self.apply_features()
         dictionary.finished.connect(self._lookup_done)
         dictionary.kanji_finished.connect(self._kanji_done)
         dictionary.difficulty_finished.connect(self._difficulty_done)
@@ -487,10 +488,11 @@ class ResultWindow(QWidget):
         QShortcut(QKeySequence("Ctrl+Shift+C"), self, self._copy_image)
         QShortcut(QKeySequence("W"), self, self._play_word)
         QShortcut(QKeySequence("K"), self, self._toggle_known)
-        QShortcut(QKeySequence("Ctrl+E"), self, lambda: self.ask_btn.isEnabled() and self.open_ask())
-        QShortcut(QKeySequence("Ctrl+H"), self, self.open_history)
+        QShortcut(QKeySequence("Ctrl+E"), self, lambda: self.feat("ask") and self.ask_btn.isEnabled() and self.open_ask())
+        QShortcut(QKeySequence("Ctrl+H"), self, lambda: self.feat("history") and self.open_history())
         QShortcut(QKeySequence("Ctrl+,"), self, self.settings_requested.emit)
-        QShortcut(QKeySequence("Ctrl+M"), self, lambda: self.mine_btn.isEnabled() and self.mine_requested.emit())
+        QShortcut(QKeySequence("Ctrl+M"), self,
+                  lambda: self.feat("anki") and self.mine_btn.isEnabled() and self.mine_requested.emit())
 
     # -- construction -----------------------------------------------------
     def _font_for(self, key: str) -> QFont:
@@ -521,6 +523,7 @@ class ResultWindow(QWidget):
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.VLine)
         bar.addWidget(sep)
+        self.color_sep = sep
         self.color_btns: dict[str, QToolButton] = {}
         for mode, label, key, tip in (
                 ("grammar", "Grammar", "Alt+G", "Color words by part of speech"),
@@ -547,6 +550,7 @@ class ResultWindow(QWidget):
         bar.addWidget(self.known_label)
         bar.addStretch()
         hist = QToolButton()
+        self.hist_btn = hist
         hist.setText("📜")
         hist.setToolTip("History of your captures, and words you keep seeing  (Ctrl+H)")
         hist.clicked.connect(self.open_history)
@@ -667,9 +671,37 @@ class ResultWindow(QWidget):
 
     def _update_image_visibility(self):
         has = self.pixmap is not None and not self.pixmap.isNull()
-        self.image_view.setVisible(bool(self.cfg.show_image) and has)
+        self.image_view.setVisible(bool(self.cfg.show_image) and has and self.feat("image"))
         if self.image_view.isVisible():
             self.image_view.fit()
+
+    # -- selectable features ------------------------------------------------
+    def feat(self, key: str) -> bool:
+        return features.enabled(self.cfg, key)
+
+    def apply_features(self):
+        """Show only what's switched on in ⚙ Settings → Selectable features."""
+        color_keys = {"grammar": "grammar", "pitch": "pitch", "difficulty": "difficulty", "known": "known"}
+        any_color = False
+        for mode, b in self.color_btns.items():
+            on = self.feat(color_keys[mode])
+            b.setVisible(on)
+            any_color |= on
+        self.color_sep.setVisible(any_color)
+        if self.cfg.color_mode in color_keys and not self.feat(color_keys[self.cfg.color_mode]):
+            self.cfg.color_mode = "none"
+            self._apply_color_mode()
+        self.diff_label.setVisible(self.feat("difficulty"))
+        self.known_label.setVisible(self.feat("known"))
+        self.pattern_bar.setVisible(self.feat("grammar") and bool(self.pattern_matches))
+        self.ask_btn.setVisible(self.feat("ask"))
+        self.mine_btn.setVisible(self.feat("anki"))
+        self.hist_btn.setVisible(self.feat("history"))
+        self.shadow_btn.setVisible(self.feat("shadow"))
+        self.image_btn.setVisible(self.feat("image"))
+        if not self.feat("selection"):
+            self.selbar.hide()
+        self._update_image_visibility()
 
     def _update_hint(self):
         self.hint.setText(f"Hold <b>{lookupkey.name()}</b> over a Japanese word to look it up")
@@ -687,6 +719,7 @@ class ResultWindow(QWidget):
         lookupkey.set_key(self.cfg.lookup_key)
         self._update_hint()
         self.known_changed()
+        self.apply_features()
         self.update_theme_button()
         self.setStyleSheet("")
         self.setStyleSheet(CSS)
@@ -912,11 +945,16 @@ class ResultWindow(QWidget):
             view.set_content(t, spans)
         self.play_btn.setEnabled(bool(text.strip()))
         self.shadow_btn.setEnabled(bool(text.strip()))
-        self._update_known_badge()
-        self._update_patterns()
+        if self.feat("known"):
+            self._update_known_badge()
+        if self.feat("grammar"):
+            self._update_patterns()
+        else:
+            self.pattern_matches = []
+            self.pattern_bar.hide()
         self._diff_req += 1
         self.difficulty = None
-        if text.strip():
+        if text.strip() and self.feat("difficulty"):
             self.diff_label.setText("<span style='color:gray'>rating…</span>")
             self.dictionary.estimate_difficulty(self._diff_req, self.ja_lines)
         else:
@@ -971,20 +1009,24 @@ class ResultWindow(QWidget):
             jt = japanese.Token(e.word, "", e.word, e.word, toks[0].pos if toks else "名詞", True)
         if e.reading and (japanese.has_kanji(jt.surface) or not jt.reading):
             jt.reading = japanese.kata_to_hira(e.reading)
-        extra = f"<div style='color:gray'>“{html.escape(word)}” in Japanese:</div>" + pitch.pattern_html(jt)
+        extra = f"<div style='color:gray'>“{html.escape(word)}” in Japanese:</div>" + \
+            (pitch.pattern_html(jt) if self.feat("pitch") else "")
         others = [x.word + (f" ({x.reading})" if x.reading and x.reading != x.word else "") for x in entries[1:4]]
         if others:
             extra += f"<div style='color:gray;font-size:9pt'>also: {html.escape('、'.join(others))}</div>"
-        try:
-            gram = grammar.to_html(grammar.describe([[jt]], jt))
-        except Exception:  # noqa: BLE001
-            gram = ""
+        gram = ""
+        if self.feat("grammar"):
+            try:
+                gram = grammar.to_html(grammar.describe([[jt]], jt))
+            except Exception:  # noqa: BLE001
+                gram = ""
         from . import conjugate
-        c.update(tok=jt, gram=gram, extra=extra, entries=entries[:1], error="", loading=False,
-                 forms=conjugate.table_html(conjugate.conjugations(jt.base, jt.ctype, jt.pos)))
-        self.dictionary.examples(req_id, e.word)
+        forms = conjugate.table_html(conjugate.conjugations(jt.base, jt.ctype, jt.pos)) if self.feat("examples") else ""
+        c.update(tok=jt, gram=gram, extra=extra, entries=entries[:1], error="", loading=False, forms=forms)
+        if self.feat("examples"):
+            self.dictionary.examples(req_id, e.word)
         self._render_popup()
-        if any(kanji.is_kanji(ch) for ch in jt.surface):
+        if self.feat("kanji") and any(kanji.is_kanji(ch) for ch in jt.surface):
             self.dictionary.lookup_kanji(req_id, jt.surface, [e.word])
 
     def _lookup_japanese(self, tok, rect: QRect):
@@ -992,24 +1034,28 @@ class ResultWindow(QWidget):
             if sec.view is not self.sender():
                 sec.view.clear_hover()
         self._lookup_req += 1
-        try:
-            gram = grammar.to_html(grammar.describe(self.ja_lines, tok)) + self._patterns_html(tok)
-        except Exception:  # noqa: BLE001
-            log.exception("Grammar analysis failed for %r", tok.surface)
-            gram = ""
-        extra = self._known_line(tok) + pitch.pattern_html(tok)
-        lvl = difficulty.word_level(self.difficulty, tok)
+        gram = ""
+        if self.feat("grammar"):
+            try:
+                gram = grammar.to_html(grammar.describe(self.ja_lines, tok)) + self._patterns_html(tok)
+            except Exception:  # noqa: BLE001
+                log.exception("Grammar analysis failed for %r", tok.surface)
+        extra = (self._known_line(tok) if self.feat("known") else "") + \
+            (pitch.pattern_html(tok) if self.feat("pitch") else "")
+        lvl = difficulty.word_level(self.difficulty, tok) if self.feat("difficulty") else ""
         if lvl:
             extra += f"<div style='color:gray;font-size:9pt'>word difficulty ≈{lvl}</div>"
-        from . import conjugate
-        forms = conjugate.table_html(conjugate.conjugations(tok.base, tok.ctype, tok.pos))
-        self.dictionary.examples(self._lookup_req, tok.base or tok.surface)
+        forms = ""
+        if self.feat("examples"):
+            from . import conjugate
+            forms = conjugate.table_html(conjugate.conjugations(tok.base, tok.ctype, tok.pos))
+            self.dictionary.examples(self._lookup_req, tok.base or tok.surface)
         self._lookup_ctx = {"id": self._lookup_req, "tok": tok, "rect": rect, "gram": gram, "extra": extra,
                             "forms": forms,
                             "entries": None, "error": "", "kanji": "", "loading": True}
         self._render_popup()
         self.dictionary.lookup(self._lookup_req, tok.candidates())
-        if any(kanji.is_kanji(c) for c in tok.surface + tok.base):
+        if self.feat("kanji") and any(kanji.is_kanji(c) for c in tok.surface + tok.base):
             self.dictionary.lookup_kanji(self._lookup_req, tok.surface if japanese.has_kanji(tok.surface)
                                          else tok.base, tok.candidates())
 
@@ -1049,6 +1095,8 @@ class ResultWindow(QWidget):
             self._update_legend()
 
     def _toggle_known(self):
+        if not self.feat("known"):
+            return
         c = self._lookup_ctx
         if not c or not self.popup.isVisible() or c["tok"].pos == "english":
             return
@@ -1129,6 +1177,8 @@ class ResultWindow(QWidget):
 
     # -- selection translation ---------------------------------------------
     def _selection_changed(self, view: WordView):
+        if not self.feat("selection"):
+            return
         self._sel_view = view
         self._sel_timer.start()
 
@@ -1256,6 +1306,9 @@ class ResultWindow(QWidget):
     # -- history -------------------------------------------------------------
     def _save_pending_capture(self, req):
         if not self._pending_capture or self._pending_capture[0] != req:
+            return
+        if not self.feat("history"):
+            self._pending_capture = None
             return
         cap = self._pending_capture[1]
         self._pending_capture = None
