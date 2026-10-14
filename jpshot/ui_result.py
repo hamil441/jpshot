@@ -771,10 +771,11 @@ class ResultWindow(QWidget):
         elif mode == "difficulty":
             text = difficulty.legend_html()
         elif mode == "known":
-            plain = "white" if theme.is_dark(self.cfg.theme) else "black"
+            dark = theme.is_dark(self.cfg.theme)
+            plain, plain_col = ("white", "#e7e7ea") if dark else ("black", "#1d1d1f")
             text = (f"<span style='color:{UNKNOWN_COLOR}'>■</span> new to you  "
                     f"<span style='color:{KNOWN_COLOR}'>■</span> known  "
-                    f"<span style='color:palette(text)'>■</span> {plain} = not rated "
+                    f"<span style='color:{plain_col}'>■</span> {plain} = not rated "
                     f"(particles, endings, symbols)  ·  "
                     f"<span style='color:gray'>hold Shift on a word and press K to mark it known/unknown "
                     + (f"· {self.known.total():,} known words</span>" if self.known.total() else
