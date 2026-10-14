@@ -1170,8 +1170,10 @@ class ResultWindow(QWidget):
                     k.image_path = kanji.render_png(k)
                 except Exception:  # noqa: BLE001
                     log.exception("Could not draw kanji %s", k.char)
+        lime = "#a3e635" if theme.is_dark(self.cfg.theme) else "#3f8f12"
         self._lookup_ctx["kanji"] = kanji.to_html(infos, theme.ACCENT, payload.get("word", ""),
-                                                  payload.get("word_story", ""), payload.get("hint", False))
+                                                  payload.get("word_story", ""), payload.get("hint", False),
+                                                  story_color=lime, pending=set(payload.get("pending", ())))
         self._render_popup()
 
     def _hide_popup(self):

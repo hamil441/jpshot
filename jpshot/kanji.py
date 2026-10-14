@@ -122,6 +122,7 @@ def is_kanji(c: str) -> bool:
 ORIGIN_KINDS = [
     ("phono-semantic compound", "sound + meaning", "one part gives the meaning, the other the sound"),
     ("ideogrammatic compound", "meanings combined", "the parts' meanings add up to the idea"),
+    ("ideogrammic compound", "meanings combined", "the parts' meanings add up to the idea"),
     ("compound ideogram", "meanings combined", "the parts' meanings add up to the idea"),
     ("pictogram", "picture", "it began as a drawing of the thing"),
     ("simple ideogram", "symbol", "an abstract sign for the idea"),
@@ -154,10 +155,13 @@ def clean_origin_html(h: str) -> str:
     t = re.sub(r"\(\s*[\u3000-\u30ff\u3400-\u9fff／/,，、\s]*\)", "", t)
     t = re.sub(r"\s+", " ", t).strip()
     t = re.sub(r"\s+([,.;:)])", r"\1", t).replace("( ", "(")
-    t = " ".join(split_sentences(t)[:2])
-    if len(t) > 300:
-        t = t[:297].rsplit(" ", 1)[0] + "…"
-    return t
+    # whole sentences only (never cut mid-sentence), up to ~220 characters
+    out = ""
+    for sent in split_sentences(t)[:2]:
+        if out and len(out) + len(sent) > 220:
+            break
+        out = f"{out} {sent}".strip()
+    return out
 
 
 def split_sentences(t: str) -> list[str]:
@@ -186,17 +190,15 @@ def layout_sentence(k: "KanjiInfo") -> str:
 
 
 def template_story(k: "KanjiInfo") -> str:
-    """Fallback without a story writer: the layout, plus the origin when it explains the meaning."""
-    sentences = []
-    lay = layout_sentence(k)
-    if lay:
-        sentences.append(lay)
+    """Fallback without a story writer, one sentence: the origin when it explains the meaning
+    (e.g. 休 = a person resting against a tree), otherwise how the parts are laid out."""
     kind = origin_kind(k.origin)[0] if k.origin else ""
-    if kind in ("meanings combined", "picture", "symbol"):
-        # e.g. "Ideogrammatic compound: 亻 (“person”) + 木 (“tree”) – a person resting against a tree."
-        orig = split_sentences(re.sub(r"^[^:]*compound[^:]*:\s*|^(?:Pictogram|Ideogram)\s*[–:-]\s*", "", k.origin))
-        sentences += orig[:2]
-    return " ".join(sentences[:3])
+    if kind in ("meanings combined", "picture"):
+        body = re.sub(r"^[^:]*(?:compound|gram)[^:]*:\s*|^(?:Pictogram|Ideogram)\s*[–:-]\s*", "", k.origin)
+        first = split_sentences(body)[:1]
+        if first and len(first[0]) <= 160:
+            return first[0]
+    return layout_sentence(k)
 
 
 def template_word_story(word: str, meaning: str, infos: list["KanjiInfo"]) -> str:
@@ -384,15 +386,58 @@ class KanjiDB:
     def _key(self) -> str:
         return self.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
 
+    def _local_session(self):
+        """Session for Ollama on this machine: ignores proxy settings from the environment."""
+        if getattr(self, "_local_sess", None) is None:
+            import requests
+
+            self._local_sess = requests.Session()
+            self._local_sess.trust_env = False
+        return self._local_sess
+
     def _ollama_running(self) -> bool:
-        if self._ollama_ok and time.time() - self._ollama_ok[0] < 60:
+        if self._ollama_ok and time.time() - self._ollama_ok[0] < 30:
             return self._ollama_ok[1]
+        reason = ""
         try:
-            ok = self._session_factory().get(f"{self.ollama_url}/api/tags", timeout=0.8).status_code == 200
-        except Exception:  # noqa: BLE001
+            r = self._local_session().get(f"{self.ollama_url}/api/tags", timeout=2)
+            ok = r.status_code == 200
+            if ok:
+                names = [m.get("name", "") for m in r.json().get("models", [])]
+                self._ollama_models = names
+                if not any(n == self.ollama_model or n.split(":")[0] == self.ollama_model for n in names):
+                    reason = (f"model {self.ollama_model!r} isn't downloaded (you have: {', '.join(names) or 'none'}) "
+                              f"— run `ollama pull {self.ollama_model}` or change the model in Settings")
+                    ok = False
+            else:
+                reason = f"HTTP {r.status_code}"
+        except Exception as e:  # noqa: BLE001
             ok = False
+            reason = f"can't reach {self.ollama_url} ({type(e).__name__}) — is `ollama serve` running?"
+        prev = self._ollama_ok[1] if self._ollama_ok else None
         self._ollama_ok = (time.time(), ok)
+        self.ollama_reason = reason
+        if ok != prev:
+            if ok:
+                log.info("Ollama ready at %s (model %s)", self.ollama_url, self.ollama_model)
+            else:
+                log.info("Ollama not used: %s", reason)
         return ok
+
+    def diagnose(self) -> str:
+        """One line for Settings: which writer is active, or why none is."""
+        self._ollama_ok = None
+        provider = self._active_provider()
+        if provider == "anthropic":
+            return f"✓ Using the Anthropic API ({self.story_model})"
+        if provider == "ollama":
+            return f"✓ Using Ollama at {self.ollama_url} with {self.ollama_model}"
+        if self.provider == "none":
+            return "Explanations are switched off"
+        if self.provider == "anthropic":
+            return "✗ No API key entered"
+        self._ollama_running()
+        return f"✗ Ollama: {getattr(self, 'ollama_reason', '') or 'not found'}"
 
     def _model_id(self, provider: str) -> str:
         return self.story_model if provider == "anthropic" else self.ollama_model
@@ -413,7 +458,7 @@ class KanjiDB:
             return "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
         if provider == "ollama":
             msgs = ([{"role": "system", "content": system}] if system else []) + messages
-            r = sess.post(f"{self.ollama_url}/api/chat",
+            r = self._local_session().post(f"{self.ollama_url}/api/chat",
                           json={"model": self.ollama_model, "stream": False, "messages": msgs,
                                 "options": {"temperature": 0.6}}, timeout=240)
             if r.status_code != 200:
@@ -422,14 +467,14 @@ class KanjiDB:
             return r.json().get("message", {}).get("content", "")
         raise RuntimeError("No explanation writer set up — choose Ollama or add an API key in ⚙ Settings")
 
-    def _llm(self, prompt: str) -> str:
+    def _llm(self, prompt: str, max_sentences: int = 1) -> str:
         if self._active_provider() == "none":
             return ""
-        text = self.chat([{"role": "user", "content": prompt}], max_tokens=260)
+        text = self.chat([{"role": "user", "content": prompt}], max_tokens=160)
         text = re.sub(r"[*_#`]+", "", re.sub(r"\s+", " ", text)).strip().strip('"')
-        return " ".join(split_sentences(text)[:3])
+        return " ".join(split_sentences(text)[:max_sentences])
 
-    def _cached_llm(self, cache_key: str, prompt: str, what: str) -> str:
+    def _cached_llm(self, cache_key: str, prompt: str, what: str, max_sentences: int = 1) -> str:
         provider = self._active_provider()
         if provider == "none":
             return ""
@@ -437,7 +482,7 @@ class KanjiDB:
         if key in self._stories:
             return self._stories[key]
         try:
-            text = self._llm(prompt)
+            text = self._llm(prompt, max_sentences)
         except Exception as e:  # noqa: BLE001
             log.warning("Story for %s failed: %s", what, e)
             return ""
@@ -458,18 +503,13 @@ class KanjiDB:
             for i, (p, m) in enumerate(k.parts)) or "no separate parts (it is a basic picture/symbol)"
         keyword = k.keyword or (k.meanings[0] if k.meanings else "?")
         prompt = (
-            f"You help an English speaker remember the kanji {k.char} "
-            f"(keyword: \"{keyword}\"; meanings: {', '.join(k.meanings[:5]) or keyword}).\n"
-            f"Its parts: {parts}.\n"
-            f"Real origin (may be useful): {k.origin or 'unknown'}\n\n"
-            "In AT MOST 3 short sentences, explain WHY these parts add up to this meaning, as a vivid, "
-            "logical picture or mini-story in the style of Remembering the Kanji, so the meaning feels "
-            "obvious and sticks. If the real origin gives a memorable reason, build on it; if a part is only "
-            "there for its sound, say so in a few words and build the picture from the other part. Refer to "
-            "each part by its meaning with the character in parentheses. Do not name the formation type, do "
-            "not list readings, no preamble, no markdown."
+            f"Kanji {k.char}, meaning \"{keyword}\". Parts: {parts}. "
+            f"Origin (use only if it helps): {k.origin or 'unknown'}\n\n"
+            "In ONE short sentence (under 20 words), say why these parts mean this, as a vivid image a learner "
+            "will remember. Name parts by meaning with the character in parentheses. If a part only gives the "
+            "sound, ignore it. No preamble, no quotes, no markdown."
         )
-        return self._cached_llm(f"kanji|{k.char}", prompt, k.char)
+        return self._cached_llm(f"kanji1|{k.char}", prompt, k.char, 1)
 
     def word_story(self, word: str, reading: str, meaning: str, infos: list[KanjiInfo]) -> str:
         if len(infos) < 2:
@@ -477,14 +517,11 @@ class KanjiDB:
         kanji = "; ".join(f"{k.char} = '{k.keyword or (k.meanings[0] if k.meanings else '?')}' "
                           f"(also: {', '.join(k.meanings[:4])})" for k in infos)
         prompt = (
-            f"Explain to an English-speaking Japanese learner why the word {word}"
-            f"{f' ({reading})' if reading else ''} means \"{meaning or '?'}\".\n"
-            f"Its kanji: {kanji}.\n\n"
-            "In AT MOST 3 short sentences, show how the kanji meanings combine into the word's meaning in a "
-            "way that sticks: logical first, vivid if it helps. Mention each kanji with its meaning. "
-            "Plain text only, no preamble, no markdown."
+            f"Japanese word {word}{f' ({reading})' if reading else ''} means \"{meaning or '?'}\". Kanji: {kanji}.\n\n"
+            "In at most 2 short sentences (under 30 words total), show how the kanji meanings combine into the "
+            "word's meaning, memorably. No preamble, no quotes, no markdown."
         )
-        return self._cached_llm(f"word|{word}", prompt, word)
+        return self._cached_llm(f"word2|{word}", prompt, word, 2)
 
     # -- words sharing a kanji ---------------------------------------------------
     def family(self, ch: str, exclude: str = "") -> list:
@@ -687,15 +724,19 @@ def render_png(k: KanjiInfo, size: int = 110) -> str:
 
 
 def to_html(infos: list[KanjiInfo], accent: str, word: str = "", word_story: str = "",
-            show_hint: bool = False) -> str:
+            show_hint: bool | str = False, story_color: str = "#a3e635", pending: set | None = None) -> str:
     if not infos:
         return ""
     from PySide6.QtCore import QUrl
 
     h = "<div style='margin-top:8px'><b>Kanji</b></div>"
-    if word_story:
+    pending = pending or set()
+    writing = f"<i style='color:{story_color}'>✍ writing…</i>"
+    if "word" in pending:
+        h += f"<div style='margin:2px 0 6px 0'><b>Why {html.escape(word)} means this:</b> {writing}</div>"
+    elif word_story:
         h += (f"<div style='margin:2px 0 6px 0'><b>Why {html.escape(word)} means this:</b> "
-              f"{html.escape(word_story)}</div>")
+              f"<span style='color:{story_color}'>{html.escape(word_story)}</span></div>")
     for k in infos:
         key = k.keyword or (k.meanings[0] if k.meanings else "")
         if k.image_path:
@@ -730,10 +771,16 @@ def to_html(infos: list[KanjiInfo], accent: str, word: str = "", word_story: str
             fam = " · ".join(f"{html.escape(w)} <span style='color:gray'>({html.escape(r)})</span> "
                              f"{html.escape(g)}" for w, r, g in k.family)
             h += f"<div style='margin:0 0 2px 4px;font-size:10pt'><b>Words with {html.escape(k.char)}:</b> {fam}</div>"
-        if k.story:
-            label = "Why" if k.story_is_ai else "Layout"
-            h += f"<div style='margin:0 0 4px 4px'><b>{label}:</b> {html.escape(k.story)}</div>"
+        if k.char in pending:
+            h += f"<div style='margin:0 0 4px 4px'><b>Why:</b> {writing}</div>"
+        elif k.story:
+            if k.story_is_ai:
+                h += (f"<div style='margin:0 0 4px 4px'><b>Why:</b> "
+                      f"<span style='color:{story_color}'>{html.escape(k.story)}</span></div>")
+            else:
+                h += f"<div style='margin:0 0 4px 4px;color:gray'>{html.escape(k.story)}</div>"
     if show_hint:
-        h += ("<div style='color:gray;font-size:9pt;margin-top:4px'>For memorable explanations of why the "
-              "parts mean this, set up a story writer in ⚙ Settings (free local Ollama, or an API key).</div>")
+        why = f" ({html.escape(show_hint)})" if isinstance(show_hint, str) else ""
+        h += (f"<div style='color:gray;font-size:9pt;margin-top:4px'>No written explanations{why}. "
+              "Check ⚙ Settings → Explanations → Test.</div>")
     return h

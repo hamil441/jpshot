@@ -211,27 +211,40 @@ class Dictionary(QObject):
                     break
             payload = {"infos": infos, "word": word,
                        "word_story": template_word_story(word, meaning, infos),
-                       "hint": getattr(self.kanji, "explanations", True) and not self.kanji.has_writer()}
+                       "hint": (getattr(self.kanji, "ollama_reason", "") or "no story writer set up")
+                       if getattr(self.kanji, "explanations", True) and not self.kanji.has_writer() else ""}
             self.kanji_finished.emit(req_id, payload)
             if infos and getattr(self.kanji, "explanations", True) and self.kanji.has_writer():
                 self._story_exec.submit(stories, payload, reading, meaning)
 
         def stories(payload, reading, meaning):
             # second pass: written explanations, updating the popup as each arrives
+            infos = payload["infos"]
+            pending = {k.char for k in infos if not k.story_is_ai}
+            if len(infos) >= 2:
+                pending.add("word")
+            payload["pending"] = pending
+            self.kanji_finished.emit(req_id, payload)
             try:
-                infos = payload["infos"]
-                ws = self.kanji.word_story(word, reading, meaning, infos)
-                if ws:
-                    payload["word_story"] = ws
+                if "word" in pending:
+                    ws = self.kanji.word_story(word, reading, meaning, infos)
+                    if ws:
+                        payload["word_story"] = ws
+                    pending.discard("word")
                     self.kanji_finished.emit(req_id, payload)
                 for k in infos:
-                    if not k.story_is_ai:
+                    if k.char in pending:
                         story = self.kanji.story(k)
                         if story:
                             k.story, k.story_is_ai = story, True
-                            self.kanji_finished.emit(req_id, payload)
+                        pending.discard(k.char)
+                        self.kanji_finished.emit(req_id, payload)
             except Exception:  # noqa: BLE001
                 log.exception("Writing explanations for %s failed", word)
+            finally:
+                if pending:
+                    pending.clear()
+                    self.kanji_finished.emit(req_id, payload)
 
         self._kanji_exec.submit(job)
 

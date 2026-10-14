@@ -35,9 +35,10 @@ def _combo(options, current):
 class SettingsDialog(QDialog):
     applied = Signal()  # emitted after config is saved
 
-    def __init__(self, cfg: Config, known=None, sync_fn=None, parent=None):
+    def __init__(self, cfg: Config, known=None, sync_fn=None, parent=None, kanji_db=None):
         super().__init__(parent)
         self.cfg = cfg
+        self.kanji_db = kanji_db
         self.known = known
         self.sync_fn = sync_fn
         self.setWindowTitle("JPShot settings")
@@ -109,6 +110,15 @@ class SettingsDialog(QDialog):
         f.addRow("API key", self.api_key)
         self.story_model = QLineEdit(cfg.story_model)
         f.addRow("Anthropic model", self.story_model)
+        test_row = QHBoxLayout()
+        test_btn = QPushButton("Test")
+        test_btn.setToolTip("Save these settings and check that the story writer can be reached")
+        test_btn.clicked.connect(self._test_writer)
+        self.writer_status = QLabel()
+        self.writer_status.setWordWrap(True)
+        test_row.addWidget(test_btn)
+        test_row.addWidget(self.writer_status, 1)
+        f.addRow(test_row)
         expl = QLabel("Each kanji gets a short (≤3 sentence) explanation of why its parts mean what they "
                       "do, and each multi-kanji word gets one for why its kanji combine into its meaning. "
                       "They're written once and saved.\nFree option: install Ollama (Arch: pacman -S ollama), "
@@ -240,6 +250,19 @@ class SettingsDialog(QDialog):
             self._svc_form.setRowVisible(self.hearing, "anki" in on)
         except AttributeError:   # Qt < 6.4
             self.hearing.setVisible("anki" in on)
+
+    def _test_writer(self):
+        self._apply()
+        if self.kanji_db is None:
+            return
+        self.writer_status.setText("Checking…")
+
+        def check():
+            from . import kanji as _k  # noqa: F401
+            return self.kanji_db.diagnose()
+
+        run_async(check, on_done=self.writer_status.setText,
+                  on_error=lambda m: self.writer_status.setText(f"✗ {m}"))
 
     def _sync_now(self):
         if self.sync_fn is None:

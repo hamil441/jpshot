@@ -185,7 +185,8 @@ class JPShotApp(QObject):
     # -- settings / theme ---------------------------------------------------
     def open_settings(self):
         if self.settings_dialog is None:
-            self.settings_dialog = SettingsDialog(self.cfg, self.known, self.sync_known)
+            self.settings_dialog = SettingsDialog(self.cfg, self.known, self.sync_known,
+                                                  kanji_db=self.dictionary.kanji)
             self.settings_dialog.applied.connect(self.apply_settings)
         else:
             self.settings_dialog.sync_sections()
