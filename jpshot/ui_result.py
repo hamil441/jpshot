@@ -716,19 +716,32 @@ class ResultWindow(QWidget):
             "english": self.sections["english"].view.toPlainText(),
             "selection": self._sel_text,
             "selection_translation": self._sel_result if self._sel_text else "",
-            "word": "", "word_reading": "", "word_meaning": "", "notes": "",
+            "word": "", "word_furigana": "", "word_reading": "", "word_meaning": "", "word_pos": "",
+            "sentence_cloze": "", "notes": "", "dictionary": self.dictionary,
             "pixmap": self.pixmap,
             "audio_text": flatten(self.ja_text, "ja"),
             "speed": self._speed_value(),
         }
+        from .mine import word_fields
+
         c = self._lookup_ctx
         if c:
             tok = c["tok"]
             entries = c.get("entries") or []
-            d["word"] = tok.base or tok.surface
-            d["word_reading"] = (entries[0].reading if entries and entries[0].reading else tok.reading)
-            d["word_meaning"] = "\n".join(f"{i + 1}. {'; '.join(s.glosses)}"
-                                          for i, s in enumerate(entries[0].senses[:4])) if entries else ""
+            if entries:
+                d.update(word_fields(tok.base or tok.surface, entries))
+            else:
+                d["word"] = tok.base or tok.surface
+                d["word_reading"] = tok.reading
+            surface = tok.surface
+        elif self._sel_text and len(self._sel_text) <= 12:
+            # no word looked up: use a short highlighted bit of text as the word
+            d["word"] = self._sel_text
+            surface = self._sel_text
+        else:
+            surface = ""
+        if surface and surface in self.ja_text:
+            d["sentence_cloze"] = self.ja_text.replace(surface, "＿＿", 1)
         return d
 
     # -- audio ------------------------------------------------------------

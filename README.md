@@ -88,6 +88,8 @@ The first kanji breakdown downloads the KRADFILE component data (about 100 KB, E
 3. After a capture, click **⛏ Mine** (Ctrl+M). Choose a deck (or **+ New deck…** to create one) and note type, then choose what goes in each field. JPShot guesses from the field names (Sentence, Meaning, Picture, Audio…) and remembers your choices per note type.
 4. Edit any text, add or remove images (📷 takes another screenshot without leaving the dialog), and press **Add card** (Ctrl+Enter).
 
+Anki requires a card's **first field** to have something in it. For vocabulary note types that's usually the word: Shift-hover a word before mining, highlight it, or type it in the dialog's Word box and press **Look up** to fill its furigana, reading, meaning and part of speech. **Guess fields again** re-guesses the field choices for a note type.
+
 Furigana is written in Anki's format (`食[た]べる`), so it shows above the kanji on cards that use `{{furigana:Field}}`. If you Shift-hover a word before mining, that word, its reading and its meaning are filled in too.
 
 ## Configuration

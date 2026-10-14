@@ -24,39 +24,78 @@ TEXT_CONTENT = [
     ("hiragana", "Hiragana"),
     ("romaji", "Rōmaji"),
     ("english", "English"),
+    ("sentence_cloze", "Sentence with the word blanked"),
     ("selection", "Selected text"),
     ("selection_translation", "Selection translation"),
-    ("word", "Word (last looked up)"),
+    ("word", "Word"),
+    ("word_furigana", "Word with furigana (Anki format)"),
     ("word_reading", "Word reading"),
     ("word_meaning", "Word meaning"),
+    ("word_pos", "Word part of speech"),
     ("notes", "Notes"),
 ]
+WORD_KEYS = ("word_furigana", "word_reading", "word_meaning", "word_pos")
 MEDIA_CONTENT = [("image", "Image(s)"), ("audio", "Japanese audio")]
 ALL_CONTENT = TEXT_CONTENT + MEDIA_CONTENT
 LABEL = dict(ALL_CONTENT)
 
 
-def guess_content(field_name: str) -> str:
-    """Best guess at what goes in a note field, from its name."""
+def guess_content(field_name: str, all_fields: list[str] | None = None) -> str:
+    """Best guess at what goes in a note field, from its name (and its siblings' names)."""
     f = field_name.lower()
+    others = [x.lower() for x in (all_fields or [])]
+    # note types with separate Vocabulary-* fields use "Expression"/"Reading" for the sentence
+    has_vocab_fields = any(any(w in o for w in ("vocab", "word")) for o in others)
     wordish = any(w in f for w in ("word", "vocab", "target", "term"))
-    rules = [
-        (("audio", "sound", "voice"), "audio"),
-        (("image", "picture", "screenshot", "photo", "pic"), "image"),
-        (("furigana",), "furigana"),
-        (("romaji", "romanization"), "romaji"),
-        (("reading", "kana", "yomi"), "word_reading" if wordish else "furigana"),
-        (("translation", "english", "sentence meaning", "sentence_meaning"), "english"),
-        (("meaning", "definition", "gloss"), "word_meaning" if wordish or "sentence" not in f else "english"),
-        (("word", "vocab", "expression", "target", "term"), "word"),
-        (("sentence", "japanese", "front", "text", "question"), "japanese"),
-        (("back", "answer"), "english"),
-        (("note", "remark", "hint", "extra"), "notes"),
-    ]
-    for keys, content in rules:
-        if any(k in f for k in keys):
-            return content
+    sentencey = "sentence" in f or (has_vocab_fields and not wordish)
+    if any(k in f for k in ("audio", "sound", "voice")):
+        return "audio"
+    if any(k in f for k in ("image", "picture", "screenshot", "photo", "pic")):
+        return "image"
+    if "cloze" in f:
+        return "sentence_cloze"
+    if any(k in f for k in ("romaji", "romanization")):
+        return "romaji"
+    if "furigana" in f:
+        return "word_furigana" if wordish else "furigana"
+    if any(k in f for k in ("pos", "part of speech", "part_of_speech")) and wordish:
+        return "word_pos"
+    if any(k in f for k in ("kana", "hiragana")) and not wordish:
+        return "hiragana"
+    if any(k in f for k in ("reading", "kana", "yomi")):
+        return "word_reading" if wordish else "furigana"
+    if any(k in f for k in ("translation", "english", "meaning", "definition", "gloss")):
+        if wordish:
+            return "word_meaning"
+        return "english" if sentencey or "translation" in f or "english" in f else "word_meaning"
+    if "expression" in f:
+        return "japanese" if has_vocab_fields else "word"
+    if wordish or "kanji" in f:
+        return "word"
+    if any(k in f for k in ("sentence", "japanese", "front", "text", "question")):
+        return "japanese"
+    if any(k in f for k in ("back", "answer")):
+        return "english"
+    if any(k in f for k in ("note", "remark", "hint", "extra")):
+        return "notes"
     return ""
+
+
+def word_fields(query: str, entries) -> dict:
+    """Word-related card content from dictionary entries."""
+    from .japanese import furigana_parts, has_kanji
+
+    e = entries[0]
+    word, reading = e.word or query, e.reading or ""
+    if reading and has_kanji(word):
+        prefix, core, rcore, suffix = furigana_parts(word, reading)
+        furi = f"{prefix}{' ' if prefix else ''}{core}[{rcore}]{suffix}" if rcore else word
+    else:
+        furi = word
+    pos = ", ".join(e.senses[0].pos) if e.senses and e.senses[0].pos else ""
+    meaning = "\n".join(f"{i + 1}. {'; '.join(s.glosses)}" for i, s in enumerate(e.senses[:4]))
+    return {"word": word, "word_furigana": furi, "word_reading": reading,
+            "word_meaning": meaning, "word_pos": pos}
 
 
 def pixmap_png(pm: QPixmap) -> bytes:
@@ -103,6 +142,9 @@ class MineDialog(QDialog):
         self.text_edits: dict[str, QPlainTextEdit] = {}
         self.last_note_id: int | None = None
         self._select_deck_after_load = ""
+        self._ignore_saved = False
+        self.dictionary = data.get("dictionary")
+        self._lookup_id = -1000
         self.setWindowTitle("Mine to Anki")
         self.resize(640, 760)
 
@@ -137,7 +179,14 @@ class MineDialog(QDialog):
         tf.addRow("Tags", self.tags)
 
         self.map_box = QGroupBox("What goes in each field")
-        self.map_form = QFormLayout(self.map_box)
+        map_outer = QVBoxLayout(self.map_box)
+        self.map_form = QFormLayout()
+        map_outer.addLayout(self.map_form)
+        reguess = QToolButton()
+        reguess.setText("Guess fields again")
+        reguess.setToolTip("Forget the saved choices for this note type and guess from the field names")
+        reguess.clicked.connect(self._reguess)
+        map_outer.addWidget(reguess, 0, Qt.AlignmentFlag.AlignRight)
 
         # -- content ----------------------------------------------------------
         content = QGroupBox("Card content (edit freely)")
@@ -146,6 +195,16 @@ class MineDialog(QDialog):
             ed = QPlainTextEdit(self.data.get(key, ""))
             ed.setFixedHeight(54 if key not in ("notes",) else 44)
             self.text_edits[key] = ed
+            if key == "word":
+                ed.setFixedHeight(34)
+                row = QHBoxLayout()
+                row.addWidget(ed, 1)
+                look = QPushButton("Look up")
+                look.setToolTip("Fill the word's furigana, reading, meaning and part of speech")
+                look.clicked.connect(self._lookup_word)
+                row.addWidget(look)
+                cf.addRow(label, row)
+                continue
             cf.addRow(label, ed)
 
         # images
@@ -275,6 +334,39 @@ class MineDialog(QDialog):
         self.status.setText(f"<span style='color:#d44'>Could not create deck: "
                             f"{html.escape(msg.split(': ', 1)[-1])}</span>")
 
+    def _reguess(self):
+        self._ignore_saved = True
+        self._model_changed(self.model.currentText())
+        self._ignore_saved = False
+
+    # -- word lookup ------------------------------------------------------
+    def _lookup_word(self):
+        word = self.text_edits["word"].toPlainText().strip()
+        if not word:
+            self.status.setText("Type or paste a word in the Word box first")
+            return
+        if self.dictionary is None:
+            return
+        self._lookup_id -= 1
+        try:
+            self.dictionary.finished.disconnect(self._word_found)
+        except (RuntimeError, TypeError):
+            pass
+        self.dictionary.finished.connect(self._word_found)
+        self.status.setText(f"Looking up {html.escape(word)}…")
+        self.dictionary.lookup(self._lookup_id, [word])
+
+    def _word_found(self, req_id, query, entries, error):
+        if req_id != self._lookup_id:
+            return
+        if error or not entries:
+            self.status.setText(html.escape(error or "No dictionary entry found for that word"))
+            return
+        fill = word_fields(query, entries)
+        for k, v in fill.items():
+            self.text_edits[k].setPlainText(v)
+        self.status.setText(f"Filled in {html.escape(query)}")
+
     def _model_changed(self, model: str):
         while self.map_form.rowCount():
             self.map_form.removeRow(0)
@@ -287,7 +379,8 @@ class MineDialog(QDialog):
             c.addItem("— nothing —", "")
             for key, label in ALL_CONTENT:
                 c.addItem(label, key)
-            want = saved.get(fname, guess_content(fname)) if saved else guess_content(fname)
+            guess = guess_content(fname, self.info["fields"][model])
+            want = saved.get(fname, guess) if saved and not self._ignore_saved else guess
             i = c.findData(want)
             c.setCurrentIndex(max(0, i))
             self.field_combos[fname] = c
@@ -368,6 +461,15 @@ class MineDialog(QDialog):
             "tags": self.tags.text().split(),
             "options": {"allowDuplicate": self.dup.isChecked(), "duplicateScope": "deck"},
         }
+        first = self.info["fields"].get(model, [""])[0]
+        if first and not fields.get(first, "").strip():
+            what = LABEL.get(mapping.get(first, ""), "nothing")
+            hint = (" Shift-hover a word before mining, or type it in the Word box and press Look up."
+                    if mapping.get(first, "").startswith("word") else "")
+            self.status.setText(
+                f"<span style='color:#d44'>Anki needs the first field, <b>{html.escape(first)}</b>, "
+                f"to have something in it. It's set to “{html.escape(what)}”, which is empty.{hint}</span>")
+            return
         audio_text = self.data.get("audio_text", "") if self.audio.isChecked() else ""
         if self.audio.isChecked() and not audio_fields:
             self.status.setText("Pick a field for “Japanese audio” (or untick the audio box)")
