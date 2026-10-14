@@ -7,6 +7,7 @@ A Flameshot-style screenshot tool for learning Japanese. Press the hotkey, drag 
 - **Dictionary popup** — hold **Shift** and hover a Japanese word: reading, rōmaji, dictionary form, meanings, its grammatical role, and a **kanji breakdown** (RTK keyword, meanings, readings, and component parts with their meanings, in the spirit of *Remembering the Kanji*).
 - **Grammar mode** — colors every word by part of speech; hovering any word (no Shift needed) explains particles, auxiliaries, conjugation type and form, and what a whole verb phrase means (e.g. 勉強しています → present · ongoing · polite).
 - **Read in Japanese** — neural text-to-speech with a **speed slider** (0.5× – 2×) always visible at the bottom.
+- **⛏ Mine** — make an Anki card from the capture: screenshot (plus more screenshots, image files or a pasted image), every version of the text, the word you looked up and its meaning, and the Japanese audio.
 - **Copy image**, **dark mode** (☾/☀ button) and a **⚙ Settings** window.
 
 If no text is detected, nothing happens.
@@ -78,6 +79,15 @@ The result window stays open while you take the next capture and simply updates;
 Grammar colors: blue = noun, red = verb, orange = adjective, purple = adverb, green = particle, pink = auxiliary (tense, politeness, negation…).
 
 The first kanji breakdown downloads the KRADFILE component data (about 100 KB, EDRDG, CC BY-SA) into `~/.cache/jpshot/`; kanji meanings and RTK keywords come from kanjiapi.dev and are cached too.
+
+## Anki mining
+
+1. In Anki: **Tools → Add-ons → Get Add-ons…**, enter **2055492159** (AnkiConnect), and restart Anki.
+2. Keep Anki open while you use JPShot.
+3. After a capture, click **⛏ Mine** (Ctrl+M). Choose a deck and note type, then choose what goes in each field. JPShot guesses from the field names (Sentence, Meaning, Picture, Audio…) and remembers your choices per note type.
+4. Edit any text, add or remove images (📷 takes another screenshot without leaving the dialog), and press **Add card** (Ctrl+Enter).
+
+Furigana is written in Anki's format (`食[た]べる`), so it shows above the kanji on cards that use `{{furigana:Field}}`. If you Shift-hover a word before mining, that word, its reading and its meaning are filled in too.
 
 ## Configuration
 

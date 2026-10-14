@@ -72,6 +72,9 @@ class JPShotApp(QObject):
         self.result = ResultWindow(cfg, self.dictionary, self.speaker)
         self.result.settings_requested.connect(self.open_settings)
         self.result.theme_toggled.connect(self.toggle_theme)
+        self.result.mine_requested.connect(self.open_mine)
+        self.mine_dialog = None
+        self._capture_callback = None
         self.settings_dialog: SettingsDialog | None = None
         self.hotkey_listener = None
 
@@ -192,6 +195,26 @@ class JPShotApp(QObject):
         theme.apply(self.cfg.theme)
         self.result.apply_settings()
 
+    # -- Anki mining --------------------------------------------------------
+    def open_mine(self):
+        from .mine import MineDialog
+
+        if self.mine_dialog is not None:
+            self.mine_dialog.close()
+            self.mine_dialog.deleteLater()
+        self.mine_dialog = MineDialog(self.cfg, self.result.mining_data(), self.capture_image, self.result)
+        self.mine_dialog.added.connect(lambda nid: self.result.status.setText(f"Anki card added (note {nid})"))
+        self.mine_dialog.show()
+        self.mine_dialog.raise_()
+
+    def capture_image(self, callback):
+        """Capture a region and hand back the image only (no OCR) — used while mining."""
+        if self.session is not None or self.busy:
+            return
+        self.result._hide_popup()
+        self._capture_callback = callback
+        QTimer.singleShot(60, self._grab)
+
     # -- capture flow -----------------------------------------------------
     def start_capture(self):
         if self.session is not None or self.busy:
@@ -209,9 +232,14 @@ class JPShotApp(QObject):
 
     def _on_cancelled(self):
         self.session = None
+        self._capture_callback = None
 
     def _on_selected(self, pixmap, rect: QRect):
         self.session = None
+        if self._capture_callback is not None:
+            cb, self._capture_callback = self._capture_callback, None
+            cb(pixmap)
+            return
         self.process_image(pixmap_to_pil(pixmap), rect, pixmap)
 
     def process_image(self, img, anchor: QRect, pixmap=None):

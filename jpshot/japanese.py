@@ -257,6 +257,26 @@ def render(lines: list[list[Token]], mode: str) -> tuple[str, list[Span]]:
     return "".join(parts), spans
 
 
+def anki_furigana(lines: list[list[Token]]) -> str:
+    """Anki's furigana syntax: 食[た]べる 日本語[にほんご] (a space starts each reading base)."""
+    out_lines = []
+    for line in lines:
+        out = ""
+        for t in line:
+            out += t.space_before
+            if t.reading and has_kanji(t.surface):
+                prefix, core, rcore, suffix = furigana_parts(t.surface, t.reading)
+                if rcore:
+                    out += prefix
+                    if out and not out.endswith(" "):
+                        out += " "  # Anki: the reading applies to the text after the last space
+                    out += f"{core}[{rcore}]{suffix}"
+                    continue
+            out += t.surface
+        out_lines.append(out)
+    return "\n".join(out_lines)
+
+
 def span_at(spans: list[Span], index: int) -> Span | None:
     i = bisect.bisect_right([s.start for s in spans], index) - 1
     if 0 <= i < len(spans) and spans[i].start <= index < spans[i].end:

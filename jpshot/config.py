@@ -56,6 +56,14 @@ class Config:
     # Which rows the result window shows, in order
     sections: list = field(default_factory=lambda: list(ALL_SECTIONS))
 
+    # Anki (via the AnkiConnect add-on)
+    anki_url: str = "http://127.0.0.1:8765"
+    anki_deck: str = ""
+    anki_model: str = ""
+    anki_tags: str = "jpshot"
+    anki_field_map: dict = field(default_factory=dict)   # note type -> {field name: content key}
+    anki_audio: bool = True
+
     @classmethod
     def path(cls) -> Path:
         return config_dir() / "config.json"

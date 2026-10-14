@@ -269,6 +269,7 @@ class DictionaryPopup(QFrame):
 class ResultWindow(QWidget):
     settings_requested = Signal()
     theme_toggled = Signal()
+    mine_requested = Signal()
 
     def __init__(self, cfg, dictionary, speaker):
         super().__init__(None, Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
@@ -286,6 +287,7 @@ class ResultWindow(QWidget):
         self._lookup_ctx = None
         self._placed = False
         self._sel_req = 0
+        self._sel_text = ""
         self._sel_view: WordView | None = None
         self._sel_timer = QTimer(self, singleShot=True, interval=450)
         self._sel_timer.timeout.connect(self._translate_selection)
@@ -337,6 +339,7 @@ class ResultWindow(QWidget):
         QShortcut(QKeySequence("]"), self, lambda: self.speed.setValue(self.speed.value() + 10))
         QShortcut(QKeySequence("Ctrl+Shift+C"), self, self._copy_image)
         QShortcut(QKeySequence("Ctrl+,"), self, self.settings_requested.emit)
+        QShortcut(QKeySequence("Ctrl+M"), self, lambda: self.mine_btn.isEnabled() and self.mine_requested.emit())
 
     # -- construction -----------------------------------------------------
     def _font_for(self, key: str) -> QFont:
@@ -377,6 +380,12 @@ class ResultWindow(QWidget):
         self.grammar_btn.toggled.connect(self._grammar_toggled)
         bar.addWidget(self.grammar_btn)
         bar.addStretch()
+        self.mine_btn = QToolButton()
+        self.mine_btn.setText("⛏ Mine")
+        self.mine_btn.setToolTip("Make an Anki card from this capture  (Ctrl+M)")
+        self.mine_btn.setEnabled(False)
+        self.mine_btn.clicked.connect(self.mine_requested.emit)
+        bar.addWidget(self.mine_btn)
         self.copy_img_btn = QToolButton()
         self.copy_img_btn.setText("Copy image")
         self.copy_img_btn.setToolTip("Copy the screenshot to the clipboard  (Ctrl+Shift+C)")
@@ -509,6 +518,9 @@ class ResultWindow(QWidget):
         self.source = res
         self.pixmap = pixmap
         self.copy_img_btn.setEnabled(pixmap is not None and not pixmap.isNull())
+        self.mine_btn.setEnabled(True)
+        self._sel_text = ""
+        self._lookup_ctx = None
         self.speaker.stop()
         self._hide_popup()
         self.selbar.hide()
@@ -658,6 +670,7 @@ class ResultWindow(QWidget):
             return
         self._sel_req += 1
         req = self._sel_req
+        self._sel_text = text
         self.sel_label.setText(f"<b>{html.escape(text)}</b> → <i style='color:gray'>translating…</i>")
         self._sel_result = ""
         self.selbar.show()
@@ -682,6 +695,33 @@ class ResultWindow(QWidget):
             except Exception:  # noqa: BLE001
                 pass
         self.sel_label.setText(f"<b>{html.escape(text)}</b> → {html.escape(out)}{extra}")
+
+    # -- mining -----------------------------------------------------------
+    def mining_data(self) -> dict:
+        """Everything the Mine dialog can put on a card."""
+        lines = self.ja_lines
+        d = {
+            "japanese": self.ja_text,
+            "furigana": japanese.anki_furigana(lines) if lines else "",
+            "hiragana": japanese.render(lines, "hiragana")[0] if lines else "",
+            "romaji": japanese.render(lines, "romaji")[0] if lines else "",
+            "english": self.sections["english"].view.toPlainText(),
+            "selection": self._sel_text,
+            "selection_translation": self._sel_result if self._sel_text else "",
+            "word": "", "word_reading": "", "word_meaning": "", "notes": "",
+            "pixmap": self.pixmap,
+            "audio_text": flatten(self.ja_text, "ja"),
+            "speed": self._speed_value(),
+        }
+        c = self._lookup_ctx
+        if c:
+            tok = c["tok"]
+            entries = c.get("entries") or []
+            d["word"] = tok.base or tok.surface
+            d["word_reading"] = (entries[0].reading if entries and entries[0].reading else tok.reading)
+            d["word_meaning"] = "\n".join(f"{i + 1}. {'; '.join(s.glosses)}"
+                                          for i, s in enumerate(entries[0].senses[:4])) if entries else ""
+        return d
 
     # -- audio ------------------------------------------------------------
     def _speed_value(self) -> float:
