@@ -18,7 +18,7 @@ from .japanese import Token
 
 log = logging.getLogger("jpshot.furigana")
 PAD = 6
-TOP = 5      # room above the readings for the pitch line
+TOP = 0
 
 
 @dataclass
@@ -158,7 +158,7 @@ class _Canvas(QWidget):
                 p.drawText(it.x + s.x + (s.w - bw) // 2, it.y + TOP + ruby_h + 2 + fb.ascent(), s.base)
 
     def _paint_pitch(self, p, it, highs, text_col, fb, fr):
-        """Color each sound high/low and draw a pitch line: high sounds overlined, ꜜ-style tick at the drop."""
+        """Color each sound of the reading high (orange) or low (blue)."""
         ruby_h = fr.height()
         idx = 0
         cells: list[tuple[int, int, bool]] = []   # (x0, x1, high) for every sound, left to right
@@ -183,18 +183,6 @@ class _Canvas(QWidget):
                 p.drawText(x, base_y, m)
                 cells.append((x, x + w, h))
                 x += w
-        # pitch line along the top of the item
-        y = it.y + 2
-        pen_col = QColor(pitch.HIGH)
-        p.setPen(pen_col)
-        for j, (x0, x1, h) in enumerate(cells):
-            if h:
-                p.drawLine(x0 + 1, y, x1 - 1, y)
-                if j + 1 < len(cells) and not cells[j + 1][2]:
-                    p.drawLine(x1 - 1, y, x1 - 1, y + 4)          # the drop
-                elif j + 1 == len(cells) and it.tok.pos not in ("助詞", "助動詞") and \
-                        pitch.accent_of(it.tok) and pitch.accent_of(it.tok) >= len(cells):
-                    p.drawLine(x1 - 1, y, x1 - 1, y + 4)          # odaka: drops after the word
 
     # -- hit testing / mouse ----------------------------------------------
     def index_at(self, pos: QPoint) -> int | None:

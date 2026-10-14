@@ -97,14 +97,18 @@ def pattern_html(tok: Token) -> str:
             f"{html.escape(word)} <span style='color:gray;font-size:9pt'>{html.escape(NAMES[k])}</span></div>")
 
 
-def legend_html() -> str:
-    words = "  ".join(
-        f"<span style='color:{COLORS[k]}'>■</span> {TERMS[k][0]} ({TERMS[k][1]}, {k}) “{TERMS[k][2]}”"
-        for k in ("heiban", "atamadaka", "nakadaka", "odaka"))
-    return (f"日本語 / Rōmaji: {words}<br>"
-            f"ひらがな / Furigana, per sound: <span style='color:{HIGH}'>■ high</span>  "
-            f"<span style='color:{LOW}'>■ low</span>  ꜜ = drop  ·  "
-            f"<span style='color:{MUTED}'>■</span> particles/endings (follow the word before)")
+def legend_html(shown: set[str] | None = None) -> str:
+    """Pattern colors (日本語/Rōmaji rows) and/or high/low (ひらがな/Furigana rows), for the rows shown."""
+    shown = shown if shown is not None else {"japanese", "hiragana"}
+    lines = []
+    if shown & {"japanese", "romaji"}:
+        lines.append("  ".join(
+            f"<span style='color:{COLORS[k]}'>■</span> {TERMS[k][0]} ({TERMS[k][1]}) “{TERMS[k][2]}”"
+            for k in ("heiban", "atamadaka", "nakadaka", "odaka")))
+    if shown & {"furigana", "hiragana"}:
+        lines.append(f"<span style='color:{HIGH}'>■</span> high  <span style='color:{LOW}'>■</span> low  "
+                     "<span style='color:gray'>— the pitch drops where orange turns blue</span>")
+    return "<br>".join(lines)
 
 
 def legend_tooltip() -> str:

@@ -65,6 +65,27 @@ class Dictionary(QObject):
             self._jam_failed = backend == "jisho"
             self._cache.clear()
 
+    def lookup(self, req_id: int, candidates: list[str]) -> None:
+        def job():
+            t = time.perf_counter()
+            log.debug("Lookup #%d candidates=%s", req_id, candidates)
+            try:
+                for q in candidates:
+                    entries = self._lookup_one(q)
+                    if entries:
+                        log.info("Lookup %s -> %d entr%s (%.0f ms): %s", q, len(entries),
+                                 "y" if len(entries) == 1 else "ies", (time.perf_counter() - t) * 1000,
+                                 "; ".join(", ".join(s.glosses[:2]) for e in entries[:1] for s in e.senses[:2]))
+                        self.finished.emit(req_id, q, entries, "")
+                        return
+                log.info("Lookup %s -> no entries", candidates)
+                self.finished.emit(req_id, "", [], "")
+            except Exception as e:  # noqa: BLE001
+                log.exception("Lookup %s failed", candidates)
+                self.finished.emit(req_id, "", [], f"{type(e).__name__}: {e}")
+
+        self._exec.submit(job)
+
     def estimate_difficulty(self, req_id: int, lines) -> None:
         from .difficulty import estimate
 

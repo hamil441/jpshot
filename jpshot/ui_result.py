@@ -31,6 +31,8 @@ JP_FONTS = ["Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic UI", "Meiryo", "Hirag
             "Hiragino Kaku Gothic ProN", "MS Gothic", "IPAexGothic", "TakaoPGothic"]
 SECTION_TITLES = {"english": "English", "japanese": "日本語", "furigana": "Furigana",
                   "hiragana": "ひらがな", "romaji": "Rōmaji"}
+CHIP_LABELS = {"english": "English\n英語", "japanese": "Japanese\n日本語", "furigana": "Furigana\nふりがな",
+               "hiragana": "Hiragana\nひらがな", "romaji": "Rōmaji\nローマ字"}
 RENDER_MODE = {"japanese": "original", "furigana": "furigana", "hiragana": "hiragana", "romaji": "romaji"}
 
 CSS = f"""
@@ -407,7 +409,7 @@ class ResultWindow(QWidget):
         for i, key in enumerate(ALL_SECTIONS):
             b = QToolButton()
             b.setObjectName("chip")
-            b.setText(SECTION_TITLES[key])
+            b.setText(CHIP_LABELS[key])
             b.setCheckable(True)
             b.setToolTip(f"Show {SECTION_TITLES[key]}  (Alt+{i + 1})\n"
                          "Ctrl+click to show several boxes at once")
@@ -581,7 +583,9 @@ class ResultWindow(QWidget):
         mode = self.cfg.color_mode
         if mode == "pitch":
             if row == "hiragana":
-                return lambda tok: pitch.mora_colors(self._pitch_map.get(id(tok))) or pitch.word_color(tok)
+                return lambda tok: pitch.mora_colors(self._pitch_map.get(id(tok)))
+            if row == "furigana":
+                return lambda tok: None        # readings are colored per sound; kanji stay plain
             return pitch.word_color
         if mode == "difficulty":
             return lambda tok: difficulty.word_color(self.difficulty, tok)
@@ -591,11 +595,8 @@ class ResultWindow(QWidget):
         mode = self.cfg.color_mode if self.cfg.color_mode in ("grammar", "pitch", "difficulty") else "none"
         for m, b in self.color_btns.items():
             b.setChecked(m == mode)
-        legends = {"grammar": grammar.legend_html, "pitch": pitch.legend_html, "difficulty": difficulty.legend_html}
-        self.legend.setText(legends[mode]() if mode in legends else "")
-        self.legend.setToolTip(pitch.legend_tooltip() if mode == "pitch" else "")
+        self._update_legend()
         self._pitch_map = pitch.sentence_highs(self.ja_lines) if mode == "pitch" else {}
-        self.legend.setVisible(mode in legends)
         on = mode != "none"
         for key, sec in self.sections.items():
             if key in RENDER_MODE:
@@ -606,6 +607,21 @@ class ResultWindow(QWidget):
                 sec.view.set_colors(False)
                 sec.view.set_colors(on)
 
+    def _update_legend(self):
+        mode = self.cfg.color_mode
+        shown = set(self.cfg.sections)
+        if mode == "pitch":
+            text = pitch.legend_html(shown)
+        elif mode == "grammar":
+            text = grammar.legend_html()
+        elif mode == "difficulty":
+            text = difficulty.legend_html()
+        else:
+            text = ""
+        self.legend.setText(text)
+        self.legend.setToolTip(pitch.legend_tooltip() if mode == "pitch" else "")
+        self.legend.setVisible(bool(text))
+
     def _apply_section_visibility(self):
         shown = set(self.cfg.sections)
         for key, chip in self.chips.items():
@@ -613,6 +629,8 @@ class ResultWindow(QWidget):
             chip.setChecked(key in shown)
             chip.blockSignals(False)
             self.sections[key].setVisible(key in shown)
+        if hasattr(self, "legend"):
+            self._update_legend()
 
     def _chip_clicked(self, key: str):
         """Click: show only this box. Ctrl/Shift+click: add or remove it from what's shown."""
