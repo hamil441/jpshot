@@ -691,7 +691,6 @@ class ResultWindow(QWidget):
         if self.cfg.color_mode in color_keys and not self.feat(color_keys[self.cfg.color_mode]):
             self.cfg.color_mode = "none"
             self._apply_color_mode()
-        self.diff_label.setVisible(self.feat("difficulty"))
         self.known_label.setVisible(self.feat("known"))
         self.pattern_bar.setVisible(self.feat("grammar") and bool(self.pattern_matches))
         self.ask_btn.setVisible(self.feat("ask"))
@@ -954,7 +953,7 @@ class ResultWindow(QWidget):
             self.pattern_bar.hide()
         self._diff_req += 1
         self.difficulty = None
-        if text.strip() and self.feat("difficulty"):
+        if text.strip():   # the sentence rating is always shown
             self.diff_label.setText("<span style='color:gray'>rating…</span>")
             self.dictionary.estimate_difficulty(self._diff_req, self.ja_lines)
         else:

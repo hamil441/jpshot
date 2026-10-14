@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 BASICS = ("Capture & OCR, the English / Japanese / Furigana / Hiragana / Rōmaji boxes, translation, "
-          "read-aloud with speed control, the word popup (dictionary, reading, audio, English-word "
-          "lookups), copy, dark mode")
+          "read-aloud with speed control, the sentence difficulty rating (≈JLPT ★), the word popup "
+          "(dictionary, reading, audio, English-word lookups), copy, dark mode")
 
 # key, label, description
 FEATURES = [
@@ -13,7 +13,7 @@ FEATURES = [
     ("grammar", "Grammar", "Color words by part of speech, list grammar points (〜わけではない…), "
                            "and explain each word's role in the popup"),
     ("pitch", "Pitch accent", "Color pitch per sound or per word, and draw the pitch in the popup"),
-    ("difficulty", "Difficulty", "Rate each sentence (≈JLPT) and color words from easy to hard"),
+    ("difficulty", "Word difficulty", "Color words from easy to hard and show each word's level in the popup"),
     ("known", "Known words", "Track words you know (Anki sync, K to mark), highlight new words, spot i+1 sentences"),
     ("kanji", "Kanji breakdown", "Kanji drawn with colored parts, readings, words sharing the kanji, stroke order"),
     ("explanations", "Explanations", "Short written explanations of why kanji and words mean what they do "

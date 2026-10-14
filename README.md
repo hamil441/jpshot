@@ -20,7 +20,7 @@ Everything is logged to the terminal you start it from (add `--debug` for full d
 
 ## Selectable features
 
-Out of the box JPShot shows only the basics: capture & OCR, the English / Japanese / Furigana / Hiragana / Rōmaji boxes, translation, read-aloud, the word popup, copy and dark mode. Turn on what you want in **⚙ Settings → Selectable features**:
+Out of the box JPShot shows only the basics: capture & OCR, the English / Japanese / Furigana / Hiragana / Rōmaji boxes, translation, read-aloud, the sentence difficulty rating, the word popup, copy and dark mode. Turn on what you want in **⚙ Settings → Selectable features**:
 
 | Feature | What it adds |
 |---|---|
@@ -28,7 +28,7 @@ Out of the box JPShot shows only the basics: capture & OCR, the English / Japane
 | Highlight to translate | translates just the part you highlight (🔊 reads it) |
 | Grammar | part-of-speech coloring, grammar points like 〜わけではない (click to underline), word roles in the popup |
 | Pitch accent | high/low per sound in the kana boxes, pattern colors per word, pitch drawn in the popup |
-| Difficulty | ≈JLPT rating per sentence and per word |
+| Word difficulty | words colored easy → hard, and each word's ≈JLPT level in the popup |
 | Known words | Anki sync of words you've reviewed, **K** to mark known, new words highlighted, **i+1** badge, furigana only over kanji you don't know, duplicate warnings when mining |
 | Kanji breakdown | kanji drawn with colored parts, readings, common words sharing the kanji, ✍ animated stroke order |
 | Explanations | why each kanji's parts and each word's kanji mean what they do (Ollama or API key) |
