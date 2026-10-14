@@ -27,6 +27,8 @@ class Entry:
 class Dictionary(QObject):
     # request id, query that matched (or ""), list[Entry], error message ("" if ok)
     finished = Signal(int, str, object, str)
+    # request id, list[kanji.KanjiInfo]
+    kanji_finished = Signal(int, object)
 
     def __init__(self, backend: str = "auto"):
         super().__init__()
@@ -37,6 +39,34 @@ class Dictionary(QObject):
         self._jam = None
         self._jam_failed = backend == "jisho"
         self._session = None
+        from .kanji import KanjiDB
+        self.kanji = KanjiDB(self._http)
+
+    def _http(self):
+        import requests
+
+        if self._session is None:
+            self._session = requests.Session()
+            self._session.headers["User-Agent"] = "jpshot (learning tool)"
+        return self._session
+
+    def set_backend(self, backend: str) -> None:
+        if backend != self.backend:
+            log.info("Dictionary backend -> %s", backend)
+            self.backend = backend
+            self._jam_failed = backend == "jisho"
+            self._cache.clear()
+
+    def lookup_kanji(self, req_id: int, word: str) -> None:
+        def job():
+            try:
+                infos = self.kanji.breakdown(word)
+            except Exception:  # noqa: BLE001
+                log.exception("Kanji breakdown for %s failed", word)
+                infos = []
+            self.kanji_finished.emit(req_id, infos)
+
+        self._exec.submit(job)
 
     def lookup(self, req_id: int, candidates: list[str]) -> None:
         def job():
@@ -99,11 +129,7 @@ class Dictionary(QObject):
         return out
 
     def _jisho(self, q: str) -> list[Entry]:
-        import requests
-
-        if self._session is None:
-            self._session = requests.Session()
-        r = self._session.get("https://jisho.org/api/v1/search/words",
+        r = self._http().get("https://jisho.org/api/v1/search/words",
                               params={"keyword": q}, timeout=8)
         log.debug("jisho.org %s -> HTTP %s", q, r.status_code)
         r.raise_for_status()

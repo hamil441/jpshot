@@ -142,6 +142,8 @@ class CaptureSession(QObject):
         for ov in self.overlays:
             ov.show_on_screen()
         for ov in self.overlays:
+            ov.raise_()  # above the (still open) result window
+        for ov in self.overlays:
             if ov.screen_ is under:
                 ov.raise_()
                 ov.activateWindow()

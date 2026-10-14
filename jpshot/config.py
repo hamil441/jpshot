@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 
@@ -20,6 +20,9 @@ def config_dir() -> Path:
     return d
 
 
+ALL_SECTIONS = ("english", "japanese", "furigana", "hiragana", "romaji")
+
+
 @dataclass
 class Config:
     # Global hotkey (pynput syntax). Set to "" to disable and bind
@@ -32,7 +35,8 @@ class Config:
     ocr_min_confidence: int = 55     # 0-100; raise if you get garbage text
     ocr_min_chars: int = 2           # fewer meaningful chars => "nothing detected"
 
-    # Translation: "google" (online, via deep-translator) or "argos" (offline)
+    # Translation: "google" (tries Google, then MyMemory, then offline Argos),
+    # "mymemory" (try MyMemory first) or "argos" (offline only)
     translator: str = "google"
 
     # Text-to-speech: "edge" (natural neural voices, online) or "gtts"
@@ -44,10 +48,13 @@ class Config:
     # "jamdict" or "jisho"
     dictionary: str = "auto"
 
-    # Remembered UI state
-    japanese_mode: str = "original"  # original | furigana | hiragana
-    last_tab: int = 1                # 0 = English, 1 = Japanese
+    # Look & layout
+    theme: str = "system"            # system | light | dark
+    grammar_mode: bool = False       # color words by part of speech, hover explains
     japanese_font_size: int = 20
+    english_font_size: int = 13
+    # Which rows the result window shows, in order
+    sections: list = field(default_factory=lambda: list(ALL_SECTIONS))
 
     @classmethod
     def path(cls) -> Path:

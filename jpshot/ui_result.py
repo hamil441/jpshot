@@ -1,17 +1,25 @@
-"""The popup shown after a capture: English text, Japanese text (with dictionary hover) and audio."""
+"""The window shown after a capture.
+
+A row of toggles at the top (English · 日本語 · Furigana · ひらがな · Rōmaji) picks which rows are
+shown; every shown row is visible at once, selectable and copyable. Selecting part of any row
+translates just that part. Hold Shift over a Japanese word for a popup with its dictionary entry,
+grammar role and kanji breakdown; in Grammar mode words are color-coded by part of speech and a
+plain hover is enough. Audio bar with a speed slider at the bottom.
+"""
 from __future__ import annotations
 
 import html
 import logging
 
 from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QTimer, Signal
-from PySide6.QtGui import (QColor, QCursor, QFont, QGuiApplication, QKeySequence, QShortcut,
-                           QTextCharFormat, QTextCursor)
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QFrame, QHBoxLayout, QLabel,
-                               QPlainTextEdit, QPushButton, QSlider, QTabWidget, QTextEdit,
-                               QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtGui import (QClipboard, QColor, QCursor, QFont, QGuiApplication, QKeySequence,
+                           QPixmap, QShortcut, QTextCharFormat, QTextCursor)
+from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QSlider,
+                               QSplitter, QTextEdit, QToolButton, QVBoxLayout, QWidget)
 
-from . import japanese, translate
+from . import grammar, japanese, kanji, theme, translate
+from .furigana_view import FuriganaView
+from .config import ALL_SECTIONS
 from .log import short
 from .ocr import OcrResult, flatten
 from .workers import run_async
@@ -20,7 +28,16 @@ log = logging.getLogger("jpshot.ui")
 
 JP_FONTS = ["Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic UI", "Meiryo", "Hiragino Sans",
             "Hiragino Kaku Gothic ProN", "MS Gothic", "IPAexGothic", "TakaoPGothic"]
-MODES = [("original", "漢字  Original"), ("furigana", "Furigana"), ("hiragana", "ひらがな")]
+SECTION_TITLES = {"english": "English", "japanese": "日本語", "furigana": "Furigana",
+                  "hiragana": "ひらがな", "romaji": "Rōmaji"}
+RENDER_MODE = {"japanese": "original", "furigana": "furigana", "hiragana": "hiragana", "romaji": "romaji"}
+
+CSS = f"""
+QToolButton#chip {{ padding: 3px 11px; border: 1px solid palette(mid); border-radius: 11px; }}
+QToolButton#chip:checked {{ background: {theme.ACCENT}; color: white; border-color: {theme.ACCENT}; }}
+QLabel#sectionTitle {{ font-weight: 600; }}
+QLabel#muted {{ color: palette(placeholder-text); }}
+"""
 
 
 def jp_font(size: int) -> QFont:
@@ -30,34 +47,93 @@ def jp_font(size: int) -> QFont:
     return f
 
 
+def copy_text(text: str) -> None:
+    """Copy to the clipboard (and the X11 primary selection, for middle-click paste)."""
+    cb = QGuiApplication.clipboard()
+    cb.setText(text, QClipboard.Mode.Clipboard)
+    if cb.supportsSelection():
+        cb.setText(text, QClipboard.Mode.Selection)
+    log.info("Copied text to clipboard (%d chars): %s", len(text), short(text))
+
+
+def copy_image(pm: QPixmap) -> None:
+    QGuiApplication.clipboard().setPixmap(pm, QClipboard.Mode.Clipboard)
+    log.info("Copied image to clipboard (%dx%d)", pm.width(), pm.height())
+
+
 # ---------------------------------------------------------------------------
-class JapaneseView(QTextEdit):
-    """Read-only Japanese text. Hold Shift while hovering a word to look it up."""
+class WordView(QTextEdit):
+    """Read-only text. If it has word spans, holding Shift while hovering looks words up."""
 
     lookup_requested = Signal(object, QRect)  # Token, global rect of the word
 
-    def __init__(self, font_size: int):
+    def __init__(self, font: QFont):
         super().__init__()
         self.setReadOnly(True)
         self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse
                                      | Qt.TextInteractionFlag.TextSelectableByKeyboard)
-        self.setFont(jp_font(font_size))
+        self.setFont(font)
+        self.setMinimumHeight(44)
         self.viewport().setMouseTracking(True)
         self.spans: list[japanese.Span] = []
         self._hover: japanese.Span | None = None
+        self.hover_lookup = False   # grammar mode: look up on plain hover
+        self._colored = False
 
-    def set_content(self, text: str, spans: list[japanese.Span]):
-        self.spans = spans
+    def set_content(self, text: str, spans: list[japanese.Span] | None = None):
+        self.spans = spans or []
         self._hover = None
+        self._colored = False
         self.setPlainText(text)
         self.setExtraSelections([])
+        if self.hover_lookup:
+            self.set_colors(True)
+
+    def set_colors(self, on: bool):
+        """Color each word by its part of speech (grammar mode)."""
+        if on == self._colored or (on and not self.spans):
+            return
+        cur = QTextCursor(self.document())
+        cur.beginEditBlock()
+        if not on:
+            cur.select(QTextCursor.SelectionType.Document)
+            cur.setCharFormat(QTextCharFormat())
+        else:
+            for span in self.spans:
+                col = grammar.color_for(span.token)
+                if not col:
+                    continue
+                cur.setPosition(span.start)
+                cur.setPosition(span.end, QTextCursor.MoveMode.KeepAnchor)
+                fmt = QTextCharFormat()
+                fmt.setForeground(QColor(col))
+                cur.mergeCharFormat(fmt)
+        cur.endEditBlock()
+        self._colored = on
+
+    def original_of_selection(self) -> str:
+        """Selected text; in a Japanese row, mapped back to the original words."""
+        c = self.textCursor()
+        a, b = c.selectionStart(), c.selectionEnd()
+        if a == b:
+            return ""
+        if not self.spans:
+            return c.selectedText().replace("\u2029", "\n")
+        out = []
+        for sp in self.spans:
+            if sp.end > a and sp.start < b:
+                if out and sp.token.space_before:
+                    out.append(sp.token.space_before)
+                out.append(sp.token.surface)
+        return "".join(out)
 
     def clear_hover(self):
         self._hover = None
         self.setExtraSelections([])
 
-    # Map a viewport point to the span under it (None if over blank space).
     def span_at(self, pos: QPoint) -> japanese.Span | None:
+        if not self.spans:
+            return None
         doc_len = self.document().characterCount() - 1
         p = self.cursorForPosition(pos).position()
         for idx in (p - 1, p):
@@ -80,7 +156,7 @@ class JapaneseView(QTextEdit):
         self._hover = span
         sel = QTextEdit.ExtraSelection()
         fmt = QTextCharFormat()
-        fmt.setBackground(QColor(232, 85, 109, 70))
+        fmt.setBackground(QColor(232, 85, 109, 80))
         sel.format = fmt
         c = QTextCursor(self.document())
         c.setPosition(span.start)
@@ -98,8 +174,36 @@ class JapaneseView(QTextEdit):
 
     def mouseMoveEvent(self, e):
         super().mouseMoveEvent(e)
-        if e.modifiers() & Qt.KeyboardModifier.ShiftModifier and not (e.buttons() & Qt.MouseButton.LeftButton):
+        if (self.hover_lookup or e.modifiers() & Qt.KeyboardModifier.ShiftModifier) \
+                and not (e.buttons() & Qt.MouseButton.LeftButton):
             self.lookup_at(e.position().toPoint())
+
+
+class Section(QWidget):
+    def __init__(self, key: str, font: QFont):
+        super().__init__()
+        self.key = key
+        head = QHBoxLayout()
+        head.setContentsMargins(2, 0, 2, 0)
+        title = QLabel(SECTION_TITLES[key])
+        title.setObjectName("sectionTitle")
+        head.addWidget(title)
+        self.badge = QLabel()
+        self.badge.setObjectName("muted")
+        head.addWidget(self.badge)
+        head.addStretch()
+        self.copy_btn = QToolButton()
+        self.copy_btn.setText("Copy")
+        self.copy_btn.setToolTip(f"Copy the {SECTION_TITLES[key]} text")
+        self.copy_btn.setAutoRaise(True)
+        self.copy_btn.clicked.connect(lambda: copy_text(self.view.toPlainText()))
+        head.addWidget(self.copy_btn)
+        self.view = FuriganaView(font) if key == "furigana" else WordView(font)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 4, 0, 0)
+        lay.setSpacing(2)
+        lay.addLayout(head)
+        lay.addWidget(self.view, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -113,37 +217,39 @@ class DictionaryPopup(QFrame):
         self.label.setWordWrap(True)
         self.label.setTextFormat(Qt.TextFormat.RichText)
         self.label.setFont(jp_font(11))
-        self.label.setMaximumWidth(420)
+        self.label.setMaximumWidth(460)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(12, 10, 12, 10)
         lay.addWidget(self.label)
 
     def _head(self, tok) -> str:
         h = f"<span style='font-size:20pt'><b>{html.escape(tok.surface)}</b></span>"
-        if tok.reading and japanese.has_kanji(tok.surface):
-            h += f"&nbsp;&nbsp;<span style='font-size:13pt;color:#e8556d'>{html.escape(tok.reading)}</span>"
+        if tok.reading and tok.reading != tok.surface:
+            h += f"&nbsp;&nbsp;<span style='font-size:13pt;color:{theme.ACCENT}'>{html.escape(tok.reading)}</span>"
+        h += f"&nbsp;&nbsp;<span style='color:gray'>{html.escape(japanese.romaji_of(tok))}</span>"
         if tok.base and tok.base != tok.surface:
             h += f"<br><span style='color:gray'>dictionary form: {html.escape(tok.base)}</span>"
         return h
 
-    def show_loading(self, tok, rect: QRect):
-        self.label.setText(self._head(tok) + "<br><i style='color:gray'>Looking up…</i>")
-        self._place(rect)
-
-    def show_entries(self, tok, rect: QRect, entries, error: str):
-        body = self._head(tok)
-        if error:
-            body += f"<p style='color:#c33'>Lookup failed: {html.escape(error)}</p>"
+    def show_info(self, tok, rect: QRect, gram_html: str, entries, error: str, kanji_html: str,
+                  loading: bool):
+        body = self._head(tok) + gram_html
+        if loading:
+            body += "<br><i style='color:gray'>Looking up…</i>"
+        elif error:
+            body += f"<p style='color:#d44'>Lookup failed: {html.escape(error)}</p>"
         elif not entries:
             body += "<p style='color:gray'>No dictionary entry found.</p>"
-        for e in entries:
+        for e in (entries or [])[:3]:
             body += (f"<p style='margin:8px 0 2px 0'><b>{html.escape(e.word)}</b>"
                      + (f" 【{html.escape(e.reading)}】" if e.reading and e.reading != e.word else "")
                      + "</p><ol style='margin:0'>")
-            for s in e.senses:
-                pos = f" <span style='color:gray;font-size:9pt'><i>{html.escape(', '.join(s.pos))}</i></span>" if s.pos else ""
+            for s in e.senses[:4]:
+                pos = (f" <span style='color:gray;font-size:9pt'><i>{html.escape(', '.join(s.pos))}</i></span>"
+                       if s.pos else "")
                 body += f"<li>{html.escape('; '.join(s.glosses))}{pos}</li>"
             body += "</ol>"
+        body += kanji_html
         self.label.setText(body)
         self._place(rect)
 
@@ -161,34 +267,67 @@ class DictionaryPopup(QFrame):
 
 # ---------------------------------------------------------------------------
 class ResultWindow(QWidget):
+    settings_requested = Signal()
+    theme_toggled = Signal()
+
     def __init__(self, cfg, dictionary, speaker):
         super().__init__(None, Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
         self.cfg, self.dictionary, self.speaker = cfg, dictionary, speaker
         self.setWindowTitle("JPShot")
-        self.resize(560, 420)
+        self.setStyleSheet(CSS)
+        self.resize(600, 640)
 
         self.source: OcrResult | None = None
+        self.pixmap: QPixmap | None = None
         self.ja_text = ""
         self.ja_lines: list[list[japanese.Token]] = []
         self._req = 0
         self._lookup_req = 0
         self._lookup_ctx = None
+        self._placed = False
+        self._sel_req = 0
+        self._sel_view: WordView | None = None
+        self._sel_timer = QTimer(self, singleShot=True, interval=450)
+        self._sel_timer.timeout.connect(self._translate_selection)
 
         self.popup = DictionaryPopup()
-        self.tabs = QTabWidget()
-        self.tabs.addTab(self._build_english(), "English")
-        self.tabs.addTab(self._build_japanese(), "日本語  Japanese")
-        self.tabs.currentChanged.connect(self._tab_changed)
+
+        # sections, stacked in a splitter so rows can be resized
+        self.sections: dict[str, Section] = {}
+        self.splitter = QSplitter(Qt.Orientation.Vertical)
+        self.splitter.setChildrenCollapsible(False)
+        for key in ALL_SECTIONS:
+            sec = Section(key, self._font_for(key))
+            sec.view.lookup_requested.connect(self._lookup)
+            sec.view.viewport().installEventFilter(self)
+            sec.view.selectionChanged.connect(lambda v=sec.view: self._selection_changed(v))
+            self.sections[key] = sec
+            self.splitter.addWidget(sec)
 
         self.status = QLabel()
-        self.status.setStyleSheet("color:gray")
+        self.status.setObjectName("muted")
+        hint = QLabel("Hold <b>Shift</b> over a Japanese word to look it up")
+        hint.setObjectName("muted")
+        foot = QHBoxLayout()
+        foot.addWidget(self.status, 1)
+        foot.addWidget(hint)
+
+        self.legend = QLabel(grammar.legend_html())
+        self.legend.setObjectName("muted")
+        self.legend.setWordWrap(True)
 
         root = QVBoxLayout(self)
-        root.addWidget(self.tabs, 1)
+        root.addLayout(self._build_toolbar())
+        root.addWidget(self.legend)
+        root.addWidget(self._build_selection_bar())
+        root.addWidget(self.splitter, 1)
         root.addWidget(self._build_audio())
-        root.addWidget(self.status)
+        root.addLayout(foot)
 
+        self._apply_section_visibility()
+        self._apply_grammar_mode()
         dictionary.finished.connect(self._lookup_done)
+        dictionary.kanji_finished.connect(self._kanji_done)
         speaker.state_changed.connect(self._speaker_state)
         QApplication.instance().installEventFilter(self)
 
@@ -196,62 +335,91 @@ class ResultWindow(QWidget):
         QShortcut(QKeySequence(Qt.Key.Key_Space), self, self.toggle_play)
         QShortcut(QKeySequence("["), self, lambda: self.speed.setValue(self.speed.value() - 10))
         QShortcut(QKeySequence("]"), self, lambda: self.speed.setValue(self.speed.value() + 10))
-        QShortcut(QKeySequence("Ctrl+1"), self, lambda: self.tabs.setCurrentIndex(0))
-        QShortcut(QKeySequence("Ctrl+2"), self, lambda: self.tabs.setCurrentIndex(1))
+        QShortcut(QKeySequence("Ctrl+Shift+C"), self, self._copy_image)
+        QShortcut(QKeySequence("Ctrl+,"), self, self.settings_requested.emit)
 
     # -- construction -----------------------------------------------------
-    def _build_english(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        bar = QHBoxLayout()
-        self.en_badge = QLabel()
-        self.en_badge.setStyleSheet("color:gray")
-        bar.addWidget(self.en_badge)
-        bar.addStretch()
-        copy = QPushButton("Copy")
-        copy.clicked.connect(lambda: self._copy(self.en_text.toPlainText(), "English"))
-        bar.addWidget(copy)
-        lay.addLayout(bar)
-        self.en_text = QPlainTextEdit()
-        self.en_text.setReadOnly(True)
-        f = self.en_text.font()
-        f.setPointSize(13)
-        self.en_text.setFont(f)
-        lay.addWidget(self.en_text, 1)
-        return w
+    def _font_for(self, key: str) -> QFont:
+        if key == "english":
+            f = QFont()
+            f.setPointSize(int(self.cfg.english_font_size))
+            return f
+        if key == "romaji":
+            f = QFont()
+            f.setPointSize(max(9, int(self.cfg.japanese_font_size) - 5))
+            return f
+        return jp_font(int(self.cfg.japanese_font_size))
 
-    def _build_japanese(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
+    def _build_toolbar(self) -> QHBoxLayout:
         bar = QHBoxLayout()
-        self.mode_group = QButtonGroup(self)
-        self.mode_group.setExclusive(True)
-        for i, (key, label) in enumerate(MODES):
+        self.chips: dict[str, QToolButton] = {}
+        for i, key in enumerate(ALL_SECTIONS):
             b = QToolButton()
-            b.setText(label)
+            b.setObjectName("chip")
+            b.setText(SECTION_TITLES[key])
             b.setCheckable(True)
-            b.setChecked(key == self.cfg.japanese_mode)
-            b.setToolTip(f"Show the Japanese as {label.split()[-1].lower()}  (Alt+{i + 1})")
+            b.setToolTip(f"Show/hide {SECTION_TITLES[key]}  (Alt+{i + 1})")
             b.setShortcut(QKeySequence(f"Alt+{i + 1}"))
-            self.mode_group.addButton(b, i)
+            b.toggled.connect(lambda on, k=key: self._section_toggled(k, on))
+            self.chips[key] = b
             bar.addWidget(b)
-        self.mode_group.idClicked.connect(self._mode_changed)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        bar.addWidget(sep)
+        self.grammar_btn = QToolButton()
+        self.grammar_btn.setObjectName("chip")
+        self.grammar_btn.setText("Grammar")
+        self.grammar_btn.setCheckable(True)
+        self.grammar_btn.setToolTip("Color words by part of speech; hover a word to see its role, "
+                                    "tense and form  (Alt+G)")
+        self.grammar_btn.setShortcut(QKeySequence("Alt+G"))
+        self.grammar_btn.setChecked(bool(self.cfg.grammar_mode))
+        self.grammar_btn.toggled.connect(self._grammar_toggled)
+        bar.addWidget(self.grammar_btn)
         bar.addStretch()
-        self.ja_badge = QLabel()
-        self.ja_badge.setStyleSheet("color:gray")
-        bar.addWidget(self.ja_badge)
-        copy = QPushButton("Copy")
-        copy.setToolTip("Copy the Japanese text as currently shown")
-        copy.clicked.connect(lambda: self._copy(self.ja_view.toPlainText(), "Japanese"))
-        bar.addWidget(copy)
-        lay.addLayout(bar)
-        self.ja_view = JapaneseView(self.cfg.japanese_font_size)
-        self.ja_view.lookup_requested.connect(self._lookup)
-        lay.addWidget(self.ja_view, 1)
-        hint = QLabel("Hold <b>Shift</b> and hover a word to look it up")
-        hint.setStyleSheet("color:gray")
-        lay.addWidget(hint)
-        return w
+        self.copy_img_btn = QToolButton()
+        self.copy_img_btn.setText("Copy image")
+        self.copy_img_btn.setToolTip("Copy the screenshot to the clipboard  (Ctrl+Shift+C)")
+        self.copy_img_btn.setEnabled(False)
+        self.copy_img_btn.clicked.connect(self._copy_image)
+        bar.addWidget(self.copy_img_btn)
+        self.theme_btn = QToolButton()
+        self.theme_btn.setToolTip("Switch light / dark")
+        self.theme_btn.clicked.connect(self.theme_toggled.emit)
+        bar.addWidget(self.theme_btn)
+        gear = QToolButton()
+        gear.setText("⚙")
+        gear.setToolTip("Settings  (Ctrl+,)")
+        gear.clicked.connect(self.settings_requested.emit)
+        bar.addWidget(gear)
+        self.update_theme_button()
+        return bar
+
+    def _build_selection_bar(self) -> QWidget:
+        self.selbar = QFrame()
+        self.selbar.setFrameShape(QFrame.Shape.StyledPanel)
+        lay = QHBoxLayout(self.selbar)
+        lay.setContentsMargins(8, 4, 4, 4)
+        self.sel_label = QLabel()
+        self.sel_label.setWordWrap(True)
+        self.sel_label.setTextFormat(Qt.TextFormat.RichText)
+        self.sel_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.sel_label.setFont(jp_font(12))
+        lay.addWidget(self.sel_label, 1)
+        self._sel_result = ""
+        copy = QToolButton()
+        copy.setText("Copy")
+        copy.setAutoRaise(True)
+        copy.setToolTip("Copy this translation")
+        copy.clicked.connect(lambda: self._sel_result and copy_text(self._sel_result))
+        lay.addWidget(copy)
+        close = QToolButton()
+        close.setText("✕")
+        close.setAutoRaise(True)
+        close.clicked.connect(self.selbar.hide)
+        lay.addWidget(close)
+        self.selbar.hide()
+        return self.selbar
 
     def _build_audio(self) -> QWidget:
         w = QFrame()
@@ -261,6 +429,7 @@ class ResultWindow(QWidget):
         self.play_btn.setMinimumWidth(170)
         self.play_btn.setToolTip("Play / stop  (Space)")
         self.play_btn.clicked.connect(self.toggle_play)
+        self.play_btn.setEnabled(False)
         lay.addWidget(self.play_btn)
         lay.addSpacing(10)
         lay.addWidget(QLabel("🐢"))
@@ -271,7 +440,7 @@ class ResultWindow(QWidget):
         self.speed.setTickInterval(25)
         self.speed.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.speed.setToolTip("Speech speed  ([ slower, ] faster)")
-        self.speed.setValue(round(self.cfg.tts_speed * 100))
+        self.speed.setValue(round(float(self.cfg.tts_speed) * 100))
         lay.addWidget(self.speed, 1)
         lay.addWidget(QLabel("🐇"))
         self.speed_lbl = QLabel()
@@ -288,59 +457,116 @@ class ResultWindow(QWidget):
         self._speed_changed(self.speed.value(), restart=False)
         return w
 
+    # -- settings / theme -------------------------------------------------
+    def update_theme_button(self):
+        dark = theme.is_dark(self.cfg.theme)
+        self.theme_btn.setText("☀" if dark else "☾")
+
+    def apply_settings(self):
+        """Re-read fonts, sections and theme from the config (after the settings dialog)."""
+        for key, sec in self.sections.items():
+            sec.view.setFont(self._font_for(key))
+        self._apply_section_visibility()
+        self.grammar_btn.setChecked(bool(self.cfg.grammar_mode))
+        self.update_theme_button()
+        self.setStyleSheet("")
+        self.setStyleSheet(CSS)
+
+    def _grammar_toggled(self, on: bool):
+        self.cfg.grammar_mode = on
+        self.cfg.save()
+        self._hide_popup()
+        self._apply_grammar_mode()
+        log.info("Grammar mode %s", "on" if on else "off")
+
+    def _apply_grammar_mode(self):
+        on = bool(self.cfg.grammar_mode)
+        self.legend.setVisible(on)
+        for key, sec in self.sections.items():
+            if key in RENDER_MODE:
+                sec.view.hover_lookup = on
+                sec.view.set_colors(on)
+
+    def _apply_section_visibility(self):
+        shown = set(self.cfg.sections)
+        for key, chip in self.chips.items():
+            chip.blockSignals(True)
+            chip.setChecked(key in shown)
+            chip.blockSignals(False)
+            self.sections[key].setVisible(key in shown)
+
+    def _section_toggled(self, key: str, on: bool):
+        self.sections[key].setVisible(on)
+        self.cfg.sections = [k for k in ALL_SECTIONS if self.chips[k].isChecked()]
+        self.cfg.save()
+        self._hide_popup()
+        log.debug("Sections shown: %s", self.cfg.sections)
+
     # -- showing a new capture -------------------------------------------
-    def show_result(self, res: OcrResult, anchor: QRect):
+    def show_result(self, res: OcrResult, anchor: QRect, pixmap: QPixmap | None = None):
         self._req += 1
         req = self._req
         self.source = res
+        self.pixmap = pixmap
+        self.copy_img_btn.setEnabled(pixmap is not None and not pixmap.isNull())
         self.speaker.stop()
-        self.popup.hide()
-        log.info("Showing result window (%s source)", res.language)
+        self._hide_popup()
+        self.selbar.hide()
+        self._sel_req += 1
+        log.info("Showing result (%s source)", res.language)
 
+        en = self.sections["english"]
         if res.language == "ja":
             self._set_japanese(res.text)
-            self.ja_badge.setText("from screenshot")
-            self.en_badge.setText("translated")
-            self.en_text.setPlainText("Translating…")
+            self._set_ja_badges("from screenshot")
+            en.badge.setText("translated")
+            en.view.set_content("Translating…")
             src, dst, text = "ja", "en", flatten(res.text, "ja")
         else:
-            self.en_text.setPlainText(res.text)
-            self.en_badge.setText("from screenshot")
-            self.ja_badge.setText("translated")
+            en.view.set_content(res.text)
+            en.badge.setText("from screenshot")
             self._set_japanese("")
-            self.ja_view.setPlainText("翻訳中… (translating)")
+            self._set_ja_badges("translated")
+            for k in RENDER_MODE:
+                self.sections[k].view.set_content("翻訳中… (translating)")
             src, dst, text = "en", "ja", flatten(res.text, "en")
         self.status.setText(f"OCR confidence {res.confidence:.0f}%")
 
         run_async(translate.translate, text, src, dst, self.cfg.translator,
                   on_done=lambda out: self._translated(req, src, out),
-                  on_error=lambda msg: self._translate_failed(req, msg))
+                  on_error=lambda msg: self._translate_failed(req, src, msg))
 
-        self.tabs.setCurrentIndex(self.cfg.last_tab if self.cfg.last_tab in (0, 1) else 1)
-        self._place_near(anchor)
+        if not self.isVisible() or not self._placed:
+            self._place_near(anchor)
+            self._placed = True
         self.show()
         self.raise_()
         self.activateWindow()
+
+    def _set_ja_badges(self, text: str):
+        for k in RENDER_MODE:
+            self.sections[k].badge.setText(text)
 
     def _translated(self, req, src, out: str):
         if req != self._req:
             log.debug("Discarding stale translation")
             return
         if src == "ja":
-            self.en_text.setPlainText(out)
+            self.sections["english"].view.set_content(out)
         else:
             self._set_japanese(out)
         self.status.setText(self.status.text() + "  ·  translated")
 
-    def _translate_failed(self, req, msg):
+    def _translate_failed(self, req, src, msg):
         if req != self._req:
             return
         log.error("Translation failed: %s", msg)
-        target = self.en_text if self.source and self.source.language == "ja" else None
-        if target:
-            target.setPlainText(f"(Translation failed: {msg})")
+        text = f"(Translation failed: {msg})"
+        if src == "ja":
+            self.sections["english"].view.set_content(text)
         else:
-            self.ja_view.setPlainText(f"(Translation failed: {msg})")
+            for k in RENDER_MODE:
+                self.sections[k].view.set_content(text)
         self.status.setText("Translation failed — see terminal for details")
 
     def _set_japanese(self, text: str):
@@ -348,14 +574,19 @@ class ResultWindow(QWidget):
         try:
             self.ja_lines = japanese.tokenize(text) if text else []
         except Exception:
-            log.exception("Japanese tokenizer failed; hover lookup and readings disabled")
+            log.exception("Japanese tokenizer failed; readings and hover lookup disabled")
             self.ja_lines = [[japanese.Token(line, "", line, "", "", False)] for line in text.split("\n")]
-        self._render_japanese()
+        for key, mode in RENDER_MODE.items():
+            view = self.sections[key].view
+            if isinstance(view, FuriganaView):
+                if text:
+                    view.set_lines(self.ja_lines)
+                else:
+                    view.set_content("")
+                continue
+            t, spans = japanese.render(self.ja_lines, mode)
+            view.set_content(t, spans)
         self.play_btn.setEnabled(bool(text.strip()))
-
-    def _render_japanese(self):
-        text, spans = japanese.render(self.ja_lines, self.cfg.japanese_mode)
-        self.ja_view.set_content(text, spans)
 
     def _place_near(self, anchor: QRect):
         scr = (QGuiApplication.screenAt(anchor.center()) or QGuiApplication.primaryScreen()).availableGeometry()
@@ -365,28 +596,92 @@ class ResultWindow(QWidget):
         if x < scr.left():
             x = scr.right() - self.width() - 16
         y = min(max(anchor.top(), scr.top() + 10), scr.bottom() - self.height() - 40)
-        self.move(x, y)
+        self.move(x, max(y, scr.top()))
 
-    # -- Japanese view ----------------------------------------------------
-    def _mode_changed(self, idx: int):
-        self.cfg.japanese_mode = MODES[idx][0]
-        self.cfg.save()
-        log.debug("Japanese display mode -> %s", self.cfg.japanese_mode)
-        self.popup.hide()
-        self._render_japanese()
-
+    # -- dictionary -------------------------------------------------------
     def _lookup(self, tok, rect: QRect):
+        for sec in self.sections.values():
+            if sec.view is not self.sender():
+                sec.view.clear_hover()
         self._lookup_req += 1
-        self._lookup_ctx = (self._lookup_req, tok, rect)
-        self.popup.show_loading(tok, rect)
+        try:
+            gram = grammar.to_html(grammar.describe(self.ja_lines, tok))
+        except Exception:  # noqa: BLE001
+            log.exception("Grammar analysis failed for %r", tok.surface)
+            gram = ""
+        self._lookup_ctx = {"id": self._lookup_req, "tok": tok, "rect": rect, "gram": gram,
+                            "entries": None, "error": "", "kanji": "", "loading": True}
+        self._render_popup()
         self.dictionary.lookup(self._lookup_req, tok.candidates())
+        if any(kanji.is_kanji(c) for c in tok.surface + tok.base):
+            self.dictionary.lookup_kanji(self._lookup_req, tok.surface if japanese.has_kanji(tok.surface)
+                                         else tok.base)
+
+    def _render_popup(self):
+        c = self._lookup_ctx
+        if c and self.isVisible():
+            self.popup.show_info(c["tok"], c["rect"], c["gram"], c["entries"], c["error"], c["kanji"],
+                                 c["loading"])
 
     def _lookup_done(self, req_id, query, entries, error):
-        if not self._lookup_ctx or req_id != self._lookup_ctx[0]:
+        if not self._lookup_ctx or req_id != self._lookup_ctx["id"]:
             return
-        _, tok, rect = self._lookup_ctx
-        if self.isVisible():
-            self.popup.show_entries(tok, rect, entries, error)
+        self._lookup_ctx.update(entries=entries, error=error, loading=False)
+        self._render_popup()
+
+    def _kanji_done(self, req_id, infos):
+        if not self._lookup_ctx or req_id != self._lookup_ctx["id"]:
+            return
+        self._lookup_ctx["kanji"] = kanji.to_html(infos, theme.ACCENT)
+        self._render_popup()
+
+    def _hide_popup(self):
+        self.popup.hide()
+        for sec in self.sections.values():
+            sec.view.clear_hover()
+
+    # -- selection translation ---------------------------------------------
+    def _selection_changed(self, view: WordView):
+        self._sel_view = view
+        self._sel_timer.start()
+
+    def _translate_selection(self):
+        v = self._sel_view
+        if v is None:
+            return
+        text = v.original_of_selection().strip()
+        if not text or len(text) > 2000:
+            return
+        is_en = v is self.sections["english"].view
+        src, dst = ("en", "ja") if is_en else ("ja", "en")
+        if not is_en and v.toPlainText().startswith(("翻訳中", "(Translation failed")):
+            return
+        self._sel_req += 1
+        req = self._sel_req
+        self.sel_label.setText(f"<b>{html.escape(text)}</b> → <i style='color:gray'>translating…</i>")
+        self._sel_result = ""
+        self.selbar.show()
+        log.info("Translating selection %s->%s: %s", src, dst, short(text))
+        run_async(translate.translate, text, src, dst, self.cfg.translator,
+                  on_done=lambda out: self._selection_done(req, text, dst, out),
+                  on_error=lambda msg: self._selection_done(req, text, dst, None, msg))
+
+    def _selection_done(self, req, text, dst, out, err=""):
+        if req != self._sel_req:
+            return
+        if out is None:
+            self.sel_label.setText(f"<b>{html.escape(text)}</b> → <span style='color:#d44'>"
+                                   f"failed: {html.escape(err)}</span>")
+            return
+        self._sel_result = out
+        extra = ""
+        if dst == "ja":
+            try:
+                rom = japanese.render(japanese.tokenize(out), "romaji")[0]
+                extra = f"<br><span style='color:gray'>{html.escape(rom)}</span>"
+            except Exception:  # noqa: BLE001
+                pass
+        self.sel_label.setText(f"<b>{html.escape(text)}</b> → {html.escape(out)}{extra}")
 
     # -- audio ------------------------------------------------------------
     def _speed_value(self) -> float:
@@ -424,38 +719,42 @@ class ResultWindow(QWidget):
                 self.status.setText(f"Audio error: {state[6:]}")
 
     # -- misc -------------------------------------------------------------
-    def _copy(self, text: str, what: str):
-        QGuiApplication.clipboard().setText(text)
-        self.status.setText(f"Copied {what} text to clipboard")
-        log.debug("Copied %s: %s", what, short(text))
-
-    def _tab_changed(self, idx):
-        self.popup.hide()
-        self.cfg.last_tab = idx
-        self.cfg.save()
+    def _copy_image(self):
+        if self.pixmap is None or self.pixmap.isNull():
+            self.status.setText("No screenshot to copy")
+            return
+        copy_image(self.pixmap)
+        self.status.setText("Copied screenshot to clipboard")
 
     def _escape(self):
         if self.popup.isVisible():
-            self.popup.hide()
-            self.ja_view.clear_hover()
+            self._hide_popup()
         else:
             self.hide()
+
+    def _view_under_cursor(self):
+        for sec in self.sections.values():
+            v = sec.view
+            if sec.isVisible() and v.spans:
+                pos = v.viewport().mapFromGlobal(QCursor.pos())
+                if v.viewport().rect().contains(pos):
+                    return v
+        return None
 
     def eventFilter(self, obj, ev):
         t = ev.type()
         if t == QEvent.Type.KeyPress and ev.key() == Qt.Key.Key_Shift and not ev.isAutoRepeat() \
-                and self.isVisible() and self.tabs.currentIndex() == 1:
-            pos = self.ja_view.viewport().mapFromGlobal(QCursor.pos())
-            if self.ja_view.viewport().rect().contains(pos):
-                self.ja_view.clear_hover()
-                self.ja_view.lookup_at(pos)
-        elif t == QEvent.Type.MouseButtonPress and self.popup.isVisible() and obj is self.ja_view.viewport():
-            self.popup.hide()
-            self.ja_view.clear_hover()
+                and self.isVisible():
+            v = self._view_under_cursor()
+            if v is not None:
+                v.clear_hover()
+                v.lookup_at(v.viewport().mapFromGlobal(QCursor.pos()))
+        elif t == QEvent.Type.MouseButtonPress and self.popup.isVisible() \
+                and any(obj is s.view.viewport() for s in self.sections.values()):
+            self._hide_popup()
         return False
 
     def hideEvent(self, e):
-        self.popup.hide()
-        self.ja_view.clear_hover()
+        self._hide_popup()
         self.speaker.stop()
         super().hideEvent(e)

@@ -11,10 +11,11 @@ from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from . import japanese, ocr
+from . import japanese, ocr, theme
 from .capture import CaptureSession, pixmap_to_pil
 from .dictionary import Dictionary
 from .tts import Speaker
+from .settings import SettingsDialog
 from .ui_result import ResultWindow
 from .workers import run_async
 
@@ -69,6 +70,10 @@ class JPShotApp(QObject):
         self.dictionary = Dictionary(cfg.dictionary)
         self.speaker = Speaker(cfg)
         self.result = ResultWindow(cfg, self.dictionary, self.speaker)
+        self.result.settings_requested.connect(self.open_settings)
+        self.result.theme_toggled.connect(self.toggle_theme)
+        self.settings_dialog: SettingsDialog | None = None
+        self.hotkey_listener = None
 
         self.capture_requested.connect(self.start_capture, Qt.ConnectionType.QueuedConnection)
         self._setup_server()
@@ -101,6 +106,8 @@ class JPShotApp(QObject):
             elif cmd == "show" and self.had_result:
                 self.result.show()
                 self.result.raise_()
+            elif cmd == "settings":
+                self.open_settings()
             elif cmd == "quit":
                 QApplication.quit()
         sock.readyRead.connect(read)
@@ -120,6 +127,9 @@ class JPShotApp(QObject):
         a = QAction("Show last result", menu)
         a.triggered.connect(lambda: self.had_result and (self.result.show(), self.result.raise_()))
         menu.addAction(a)
+        a = QAction("Settings…", menu)
+        a.triggered.connect(self.open_settings)
+        menu.addAction(a)
         menu.addSeparator()
         a = QAction("Quit", menu)
         a.triggered.connect(QApplication.quit)
@@ -131,7 +141,9 @@ class JPShotApp(QObject):
         self._menu = menu
 
     def _setup_hotkey(self):
-        self.hotkey_listener = None
+        if self.hotkey_listener:
+            self.hotkey_listener.stop()
+            self.hotkey_listener = None
         if not self.cfg.hotkey:
             log.info("Global hotkey disabled in config")
             return
@@ -149,9 +161,36 @@ class JPShotApp(QObject):
             self.hotkey_listener.daemon = True
             self.hotkey_listener.start()
             log.info("Global hotkey registered: %s", self.cfg.hotkey)
+            self._active_hotkey = self.cfg.hotkey
         except Exception as e:  # noqa: BLE001
             log.error("Could not register global hotkey %r: %s. Use the tray icon or bind "
                       "`python -m jpshot capture` to a key in your OS settings.", self.cfg.hotkey, e)
+
+    # -- settings / theme ---------------------------------------------------
+    def open_settings(self):
+        if self.settings_dialog is None:
+            self.settings_dialog = SettingsDialog(self.cfg)
+            self.settings_dialog.applied.connect(self.apply_settings)
+        else:
+            self.settings_dialog.sync_sections()
+        self.settings_dialog.show()
+        self.settings_dialog.raise_()
+        self.settings_dialog.activateWindow()
+
+    def apply_settings(self):
+        old_hotkey = getattr(self, "_active_hotkey", None)
+        theme.apply(self.cfg.theme)
+        ocr.configure(self.cfg.tesseract_cmd)
+        self.dictionary.set_backend(self.cfg.dictionary)
+        self.result.apply_settings()
+        if self.cfg.hotkey != old_hotkey:
+            self._setup_hotkey()
+
+    def toggle_theme(self):
+        self.cfg.theme = "light" if theme.is_dark(self.cfg.theme) else "dark"
+        self.cfg.save()
+        theme.apply(self.cfg.theme)
+        self.result.apply_settings()
 
     # -- capture flow -----------------------------------------------------
     def start_capture(self):
@@ -159,10 +198,9 @@ class JPShotApp(QObject):
             log.debug("Capture already in progress; ignoring")
             return
         log.info("Starting capture")
-        self.had_result = self.result.isVisible() or self.had_result
-        self.result.hide()
-        # give the window manager a moment to remove our window before grabbing
-        QTimer.singleShot(180, self._grab)
+        # The result window stays open; only the dictionary popup is hidden.
+        self.result._hide_popup()
+        QTimer.singleShot(60, self._grab)
 
     def _grab(self):
         self.session = CaptureSession()
@@ -174,23 +212,23 @@ class JPShotApp(QObject):
 
     def _on_selected(self, pixmap, rect: QRect):
         self.session = None
-        self.process_image(pixmap_to_pil(pixmap), rect)
+        self.process_image(pixmap_to_pil(pixmap), rect, pixmap)
 
-    def process_image(self, img, anchor: QRect):
+    def process_image(self, img, anchor: QRect, pixmap=None):
         self.busy = True
         QApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
         run_async(ocr.recognize, img, self.cfg.ocr_languages, self.cfg.ocr_min_confidence,
                   self.cfg.ocr_min_chars,
-                  on_done=lambda res: self._on_ocr(res, anchor),
+                  on_done=lambda res: self._on_ocr(res, anchor, pixmap),
                   on_error=self._on_ocr_error)
 
-    def _on_ocr(self, res, anchor):
+    def _on_ocr(self, res, anchor, pixmap=None):
         self.busy = False
         QApplication.restoreOverrideCursor()
         if res is None:
             return  # nothing detected -> nothing happens
         self.had_result = True
-        self.result.show_result(res, anchor)
+        self.result.show_result(res, anchor, pixmap)
 
     def _on_ocr_error(self, msg):
         self.busy = False

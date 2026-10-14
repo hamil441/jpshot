@@ -1,10 +1,13 @@
 # JPShot
 
-A Flameshot-style screenshot tool for learning Japanese. Press the hotkey, drag around any text on screen, and if JPShot finds English or Japanese text it pops up a window with:
+A Flameshot-style screenshot tool for learning Japanese. Press the hotkey, drag around any text on screen, and if JPShot finds English or Japanese text it opens a study window with every version of the text stacked together:
 
-- **English** — the text in English (OCR'd or translated), selectable and copyable.
-- **日本語 Japanese** — the text in Japanese, with a one-click switch between **Original**, **Furigana** (`食(た)べる`) and **ひらがな**. Hold **Shift** and hover any word to see its dictionary entry (dictionary form, reading, meanings, part of speech).
-- **Read in Japanese** — neural Japanese text-to-speech with a **speed slider** (0.5× – 2×) always visible at the bottom.
+- **English**, **日本語** (original), **Furigana** (readings drawn above the kanji), **ひらがな** and **Rōmaji** — a row of toggles at the top chooses which are shown. Everything is selectable and copyable.
+- **Select to translate** — highlight part of any row and just that part is translated in a bar at the top.
+- **Dictionary popup** — hold **Shift** and hover a Japanese word: reading, rōmaji, dictionary form, meanings, its grammatical role, and a **kanji breakdown** (RTK keyword, meanings, readings, and component parts with their meanings, in the spirit of *Remembering the Kanji*).
+- **Grammar mode** — colors every word by part of speech; hovering any word (no Shift needed) explains particles, auxiliaries, conjugation type and form, and what a whole verb phrase means (e.g. 勉強しています → present · ongoing · polite).
+- **Read in Japanese** — neural text-to-speech with a **speed slider** (0.5× – 2×) always visible at the bottom.
+- **Copy image**, **dark mode** (☾/☀ button) and a **⚙ Settings** window.
 
 If no text is detected, nothing happens.
 
@@ -45,6 +48,7 @@ jpshot --debug         # same, with verbose debug logs
 jpshot capture         # take a capture now (sends it to the running instance, or starts one)
 jpshot file shot.png   # open the result window for an existing image
 jpshot ocr shot.png    # terminal only: prints OCR text, translation, furigana and hiragana
+jpshot settings        # open the settings window
 jpshot quit            # stop the running instance
 ```
 
@@ -58,29 +62,40 @@ Default hotkey: **Ctrl+Alt+J**. Left-clicking the tray icon also starts a captur
 |---|---|---|
 | Capture | drag | select a region |
 | Capture | Esc / right-click | cancel |
-| Result | Shift + hover a Japanese word | dictionary popup |
+| Result | toggles in the top row, or Alt+1 … Alt+5 | show/hide English, 日本語, Furigana, ひらがな, Rōmaji |
+| Result | select text in any row | translate just that part |
+| Result | Shift + hover a Japanese word | dictionary, grammar and kanji popup |
+| Result | Grammar toggle, or Alt+G | color words by part of speech; plain hover explains them |
 | Result | Esc | close popup, then the window |
 | Result | Space | play / stop audio |
 | Result | `[` / `]` | slower / faster speech |
-| Result | Alt+1 / Alt+2 / Alt+3 | Original / Furigana / ひらがな |
-| Result | Ctrl+1 / Ctrl+2 | English / Japanese tab |
+| Result | Ctrl+Shift+C or *Copy image* | copy the screenshot |
+| Result | ☾ / ☀ | dark / light mode |
+| Result | ⚙ or Ctrl+, | settings |
 
-Changing the speed while audio is playing restarts it at the new speed from about the same spot. Your speed, display mode and tab are remembered.
+The result window stays open while you take the next capture and simply updates; move it wherever you like and it stays there. Changing the speed while audio is playing restarts it at the new speed from about the same spot. Your choices are remembered.
+
+Grammar colors: blue = noun, red = verb, orange = adjective, purple = adverb, green = particle, pink = auxiliary (tense, politeness, negation…).
+
+The first kanji breakdown downloads the KRADFILE component data (about 100 KB, EDRDG, CC BY-SA) into `~/.cache/jpshot/`; kanji meanings and RTK keywords come from kanjiapi.dev and are cached too.
 
 ## Configuration
 
-Settings live in `config.json` (path shown by `jpshot check`; on Linux `~/.config/jpshot/`, Windows `%APPDATA%\jpshot\`, macOS `~/Library/Application Support/jpshot/`).
+Use **⚙ Settings** in the window (or `jpshot settings`). Changes apply immediately, including the hotkey. Settings are stored in `config.json` (on Linux `~/.config/jpshot/`, Windows `%APPDATA%\jpshot\`, macOS `~/Library/Application Support/jpshot/`), which you can also edit by hand:
 
 | Key | Default | Notes |
 |---|---|---|
-| `hotkey` | `<ctrl>+<alt>+j` | pynput syntax, e.g. `<cmd>+<shift>+j`, `<print_screen>`. `""` disables it |
+| `hotkey` | `<ctrl>+<alt>+j` | pynput syntax, e.g. `<shift>+<print_screen>`. `""` disables it |
 | `tesseract_cmd` | `""` | full path if Tesseract isn't found automatically |
 | `ocr_min_confidence` | `55` | raise it if you get garbage text, lower it if text is missed |
-| `translator` | `google` | or `argos` for offline (see below) |
+| `translator` | `google` | Google with automatic fallbacks; `mymemory`; or `argos` (offline) |
 | `tts_engine` | `edge` | Microsoft neural voices (online); falls back to `gtts` |
 | `tts_voice` | `ja-JP-NanamiNeural` | or `ja-JP-KeitaNeural` (male) |
 | `dictionary` | `auto` | offline JMdict if installed, else jisho.org; or force `jamdict` / `jisho` |
-| `japanese_font_size` | `20` | |
+| `theme` | `system` | `light`, `dark` or follow the system |
+| `sections` | all five | which rows to show |
+| `grammar_mode` | `false` | |
+| `japanese_font_size` / `english_font_size` | `20` / `13` | |
 
 ### Going offline (optional)
 
@@ -107,4 +122,4 @@ Run with `--debug` and watch the terminal: it shows each OCR word with its confi
 
 ## How it works
 
-`capture.py` freezes every screen and shows the selection overlay · `ocr.py` runs Tesseract (`jpn+eng`), filters low-confidence words and decides Japanese vs English · `translate.py` translates the other way · `japanese.py` segments the Japanese with MeCab/UniDic (fugashi) to get readings and dictionary forms, and renders Original/Furigana/ひらがな while tracking where every word sits · `dictionary.py` looks words up · `tts.py` synthesizes speech at the chosen speed (cached) · `ui_result.py` is the window · `app.py` ties it together with the tray, hotkey and single-instance socket.
+`capture.py` freezes every screen and shows the selection overlay · `ocr.py` runs Tesseract (`jpn+eng`), filters low-confidence words and decides Japanese vs English · `translate.py` translates the other way · `japanese.py` segments the Japanese with MeCab/UniDic (fugashi) to get readings and dictionary forms, and renders Original/Furigana/ひらがな while tracking where every word sits · `dictionary.py` looks words up · `tts.py` synthesizes speech at the chosen speed (cached) · `grammar.py` explains word roles and verb phrases · `kanji.py` builds kanji breakdowns · `furigana_view.py` draws readings above kanji · `ui_result.py` is the window · `settings.py` is the settings dialog · `app.py` ties it together with the tray, hotkey and single-instance socket.

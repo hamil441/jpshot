@@ -5,6 +5,7 @@
     python -m jpshot file IMG     run the OCR/translate window on an image file
     python -m jpshot ocr IMG      terminal only: print OCR text, language and translation
     python -m jpshot check        check that every dependency is installed and working
+    python -m jpshot settings     open the settings window
     python -m jpshot quit         stop the running instance
 
 Options:  --debug  verbose logs     --setup-offline  install offline translation models
@@ -104,13 +105,14 @@ def cmd_ocr(cfg: Config, path: str) -> int:
     print("Translation:", out)
     print("Furigana:   ", japanese.render(lines, "furigana")[0])
     print("Hiragana:   ", japanese.render(lines, "hiragana")[0])
+    print("Romaji:     ", japanese.render(lines, "romaji")[0])
     return 0
 
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="jpshot", description="Screenshot → OCR → English/Japanese study popup")
     p.add_argument("command", nargs="?", default="run",
-                   choices=["run", "capture", "file", "ocr", "check", "quit", "show"])
+                   choices=["run", "capture", "file", "ocr", "check", "quit", "show", "settings"])
     p.add_argument("image", nargs="?", help="image path for `file` / `ocr`")
     p.add_argument("--debug", "-d", action="store_true", help="verbose debug logging")
     p.add_argument("--setup-offline", action="store_true", help="install Argos offline translation models")
@@ -146,7 +148,7 @@ def main(argv=None) -> int:
 
     from .app import JPShotApp, make_icon, send_to_running
 
-    if args.command in ("capture", "quit", "show") and send_to_running(args.command):
+    if args.command in ("capture", "quit", "show", "settings") and send_to_running(args.command):
         return 0
     if args.command in ("quit", "show"):
         log.info("JPShot is not running")
@@ -155,6 +157,8 @@ def main(argv=None) -> int:
         log.info("JPShot is already running. Use `python -m jpshot capture` or the hotkey.")
         return 0
 
+    from . import theme
+    theme.apply(cfg.theme)
     app.setWindowIcon(make_icon())
     jp = JPShotApp(cfg)
     log.info("JPShot %s running. Hotkey: %s  ·  Ctrl+C here to quit.", __version__, cfg.hotkey or "(none)")
@@ -167,12 +171,16 @@ def main(argv=None) -> int:
 
     if args.command == "capture":
         QTimer.singleShot(400, jp.start_capture)
+    elif args.command == "settings":
+        QTimer.singleShot(100, jp.open_settings)
     elif args.command == "file":
         from PIL import Image
         img = Image.open(args.image).convert("RGB")
         scr = QGuiApplication.primaryScreen().availableGeometry()
         anchor = QRect(scr.center().x() - 300, scr.top() + 80, 1, 1)
-        QTimer.singleShot(200, lambda: jp.process_image(img, anchor))
+        from PySide6.QtGui import QPixmap
+        pm = QPixmap(args.image)
+        QTimer.singleShot(200, lambda: jp.process_image(img, anchor, pm))
 
     code = app.exec()
     jp.shutdown()

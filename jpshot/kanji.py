@@ -1,0 +1,292 @@
+"""Kanji breakdown in the spirit of Remembering the Kanji: keyword, meanings, readings, components.
+
+Data sources (downloaded on first use, cached in ~/.cache/jpshot):
+  * KRADFILE (EDRDG, CC BY-SA 4.0) for each kanji's component parts
+  * kanjiapi.dev for meanings, readings, grade/JLPT and the Heisig (RTK) keyword
+  * offline jamdict/KANJIDIC2 instead, if installed
+"""
+from __future__ import annotations
+
+import gzip
+import html
+import json
+import logging
+import os
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+log = logging.getLogger("jpshot.kanji")
+
+KRAD_URLS = [
+    "http://ftp.edrdg.org/pub/Nihongo/kradfile.gz",
+    "https://ftp.edrdg.org/pub/Nihongo/kradfile.gz",
+    "http://ftp.monash.edu/pub/nihongo/kradfile.gz",
+]
+KRAD2_URLS = [u.replace("kradfile.gz", "kradfile2.gz") for u in KRAD_URLS]
+
+# Names for components that aren't ordinary kanji (or whose radical meaning differs),
+# mostly following RTK primitive names. KRADFILE writes several radicals using stand-in
+# kanji (化 for 亻, 汁 for 氵 …); those are mapped here too.
+RADICALS = {
+    "亻": "person", "化": "person", "氵": "water", "汁": "water", "扌": "fingers / hand",
+    "扎": "fingers / hand", "艹": "flowers / grass", "艾": "flowers / grass",
+    "忄": "state of mind", "忙": "state of mind", "辶": "road / movement", "込": "road / movement",
+    "阝": "pinnacle / city", "阡": "pinnacle", "邦": "city", "犭": "pack of wild dogs",
+    "犯": "pack of wild dogs", "礻": "altar / spirit", "礼": "altar / spirit", "衤": "cloak",
+    "初": "cloak", "宀": "house / roof", "冖": "crown / cover", "⺌": "little", "尚": "little",
+    "灬": "oven fire", "杰": "oven fire", "刂": "saber / knife", "刈": "saber / knife",
+    "亠": "top hat / lid", "儿": "human legs", "冂": "hood", "几": "wind / table", "凵": "container",
+    "勹": "bound up / wrapping", "匕": "spoon / sitting", "匚": "box", "卩": "stamp / seal",
+    "厶": "elbow / private", "又": "crotch / again / right hand", "囗": "enclosure", "夂": "walking legs",
+    "彡": "hair / shape", "彳": "going person", "疒": "sickness", "广": "cave / dotted cliff",
+    "厂": "cliff", "尸": "flag / corpse", "戸": "door", "廴": "stretch", "廾": "two hands",
+    "弋": "arrow / ceremony", "彐": "broom", "ヨ": "broom", "攵": "taskmaster", "攴": "taskmaster",
+    "丶": "drop", "丿": "slash", "乙": "fishhook", "乚": "fishhook", "亅": "barb", "丨": "walking stick",
+    "一": "one / floor", "ノ": "slash", "ハ": "animal legs / eight", "マ": "mama", "ユ": "yu",
+    "个": "umbrella", "𠆢": "umbrella", "⺍": "little", "龸": "school house", "⺈": "bound up",
+    "罒": "eye (sideways) / net", "買": "net", "⺮": "bamboo", "竹": "bamboo", "糸": "thread",
+    "言": "say / words", "金": "gold / metal", "食": "eat / food", "飠": "eat / food",
+    "月": "moon / month / flesh (part of body)", "日": "sun / day", "曰": "say", "口": "mouth",
+    "木": "tree / wood", "火": "fire", "土": "soil / ground", "士": "samurai / gentleman",
+    "心": "heart", "女": "woman", "子": "child", "人": "person", "手": "hand", "目": "eye",
+    "田": "rice field", "力": "power", "刀": "sword / knife", "王": "king / jewel", "玉": "jewel",
+    "石": "stone", "示": "altar / show", "禾": "grain / wheat", "穴": "hole", "立": "stand / vase",
+    "羊": "sheep", "耳": "ear", "虫": "insect", "衣": "garment", "見": "see", "足": "foot / leg",
+    "走": "run", "酉": "sake jar / whiskey bottle", "雨": "rain", "門": "gate", "貝": "shellfish / money",
+    "車": "car / vehicle", "馬": "horse", "魚": "fish", "鳥": "bird", "隹": "old bird / turkey",
+    "頁": "head / page", "大": "large / big", "小": "little / small", "山": "mountain", "川": "river",
+    "工": "craft / work", "己": "self / snake", "巾": "towel / cloth", "干": "dry / clothesline",
+    "弓": "bow", "戈": "halberd / fiesta", "斤": "axe", "方": "direction", "欠": "yawn / lack",
+    "止": "stop / footprint", "歹": "bones / death", "殳": "missile / weapon", "毛": "fur",
+    "水": "water", "爪": "claw", "牛": "cow", "犬": "dog", "白": "white", "皮": "skin / pelt",
+    "皿": "dish / plate", "矢": "arrow / dart", "米": "rice", "肉": "meat", "自": "oneself / nose",
+    "至": "climax / arrive", "舌": "tongue", "舟": "boat", "行": "going / line", "西": "west",
+    "谷": "valley", "豆": "beans", "豕": "pig / sow", "身": "body", "辛": "spicy / bitter",
+    "里": "village / ri", "長": "long", "青": "blue / green", "非": "un- / not", "面": "face / mask",
+    "音": "sound", "首": "neck / head", "高": "tall", "鬼": "ghost / demon", "十": "ten / needle",
+    "八": "eight", "二": "two", "入": "enter", "卜": "divining rod / magic wand", "夕": "evening",
+    "寸": "glue / measurement", "幺": "cocoon / short thread", "文": "sentence / pattern",
+    "斗": "Big Dipper / measure", "比": "compare", "氏": "family name", "玄": "mysterious",
+    "生": "life / birth", "用": "use", "冫": "ice", "ヰ": "well", "五": "five", "吾": "I (literary)",
+    "亡": "deceased", "并": "puzzle", "井": "well", "无": "nothing", "瓦": "tile", "甘": "sweet",
+    "疋": "zoo / roll of cloth", "癶": "teepee / outspread legs", "老": "old man", "耂": "old man",
+    "而": "rake / and yet", "臣": "retainer", "色": "color", "虍": "tiger", "血": "blood",
+    "角": "horn / angle", "赤": "red", "辰": "sign of the dragon", "隶": "slave / reach",
+    "革": "leather", "韋": "tanned leather", "風": "wind", "飛": "fly", "香": "incense / fragrance",
+    "骨": "bone / skeleton", "髟": "long hair", "鬲": "tripod", "黄": "yellow", "黒": "black",
+    "鼻": "nose", "齒": "tooth", "歯": "tooth", "龠": "flute", "亀": "turtle", "竜": "dragon",
+}
+
+# KRADFILE stand-in characters -> the radical they represent
+STAND_INS = {"化": "亻", "汁": "氵", "扎": "扌", "艾": "艹", "忙": "忄", "込": "辶", "阡": "阝",
+             "邦": "阝", "犯": "犭", "礼": "礻", "初": "衤", "尚": "⺌", "杰": "灬", "刈": "刂",
+             "買": "罒", "个": "𠆢"}
+
+
+@dataclass
+class KanjiInfo:
+    char: str
+    keyword: str = ""            # Heisig / RTK keyword when known
+    meanings: list[str] = field(default_factory=list)
+    on: list[str] = field(default_factory=list)
+    kun: list[str] = field(default_factory=list)
+    strokes: int | None = None
+    grade: int | None = None
+    jlpt: int | None = None
+    parts: list[tuple[str, str]] = field(default_factory=list)  # (component, meaning)
+
+
+def is_kanji(c: str) -> bool:
+    return ("㐀" <= c <= "鿿" or "豈" <= c <= "﫿"
+            or "\U00020000" <= c <= "\U0003134f" or c in "々〆")
+
+
+def cache_dir() -> Path:
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home()))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Caches"
+    else:
+        base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    d = base / "jpshot"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+class KanjiDB:
+    """Thread-unsafe by design: call it only from the dictionary's single worker thread."""
+
+    def __init__(self, session_factory):
+        self._session_factory = session_factory
+        self._krad: dict[str, list[str]] | None = None
+        self._krad_failed = False
+        self._info: dict[str, KanjiInfo] = {}
+        self._api_cache_path = cache_dir() / "kanjiapi.json"
+        self._api_cache: dict[str, dict] = {}
+        try:
+            if self._api_cache_path.exists():
+                self._api_cache = json.loads(self._api_cache_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            self._api_cache = {}
+        self._jam = None
+
+    # -- components -------------------------------------------------------
+    def _load_krad(self) -> dict[str, list[str]]:
+        if self._krad is not None:
+            return self._krad
+        if self._krad_failed:
+            return {}
+        path = cache_dir() / "krad.json"
+        if path.exists():
+            try:
+                self._krad = json.loads(path.read_text(encoding="utf-8"))
+                log.info("Loaded kanji components (%d kanji) from %s", len(self._krad), path)
+                return self._krad
+            except Exception:  # noqa: BLE001
+                log.warning("Corrupt %s; downloading again", path)
+        krad: dict[str, list[str]] = {}
+        sess = self._session_factory()
+        for urls in (KRAD_URLS, KRAD2_URLS):
+            for url in urls:
+                try:
+                    log.info("Downloading kanji component data from %s …", url)
+                    r = sess.get(url, timeout=20)
+                    r.raise_for_status()
+                    text = gzip.decompress(r.content).decode("euc_jp", errors="replace")
+                    for line in text.splitlines():
+                        if not line or line.startswith("#") or " : " not in line:
+                            continue
+                        k, comps = line.split(" : ", 1)
+                        krad.setdefault(k.strip(), comps.split())
+                    break
+                except Exception as e:  # noqa: BLE001
+                    log.warning("Could not get %s: %s", url, e)
+        if not krad:
+            log.error("Kanji component data unavailable (no internet?); breakdown will show meanings only")
+            self._krad_failed = True
+            return {}
+        path.write_text(json.dumps(krad, ensure_ascii=False), encoding="utf-8")
+        log.info("Saved kanji components for %d kanji to %s", len(krad), path)
+        self._krad = krad
+        return krad
+
+    def _parts(self, ch: str) -> list[str]:
+        krad = self._load_krad()
+        comps = [c for c in krad.get(ch, []) if c != ch]
+        # KRADFILE lists every sub-part; drop parts already contained in another listed part
+        # (語: 口 五 言 -> 言 五), which is closer to how RTK splits a kanji.
+        keep = []
+        for c in comps:
+            inside_other = any(c != o and c in krad.get(o, []) for o in comps)
+            if not inside_other:
+                keep.append(c)
+        return keep
+
+    # -- meanings -------------------------------------------------------------
+    def _api(self, ch: str) -> dict | None:
+        if ch in self._api_cache:
+            return self._api_cache[ch]
+        try:
+            r = self._session_factory().get(f"https://kanjiapi.dev/v1/kanji/{ch}", timeout=8)
+            log.debug("kanjiapi.dev %s -> HTTP %s", ch, r.status_code)
+            data = r.json() if r.status_code == 200 else None
+        except Exception as e:  # noqa: BLE001
+            log.warning("kanjiapi.dev lookup for %s failed: %s", ch, e)
+            return None
+        self._api_cache[ch] = data
+        try:
+            self._api_cache_path.write_text(json.dumps(self._api_cache, ensure_ascii=False), encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+        return data
+
+    def _jamdict_info(self, ch: str) -> dict | None:
+        try:
+            if self._jam is None:
+                from jamdict import Jamdict
+
+                self._jam = Jamdict()
+            res = self._jam.lookup(ch)
+            if not res.chars:
+                return None
+            c = res.chars[0]
+            meanings, on, kun = [], [], []
+            for g in c.rm_groups:
+                meanings += [m.value for m in g.meanings if getattr(m, "m_lang", "") in ("", "en")]
+                on += [r.value for r in g.readings if r.r_type == "ja_on"]
+                kun += [r.value for r in g.readings if r.r_type == "ja_kun"]
+            return {"meanings": meanings, "on_readings": on, "kun_readings": kun,
+                    "stroke_count": c.stroke_count, "grade": c.grade, "jlpt": c.jlpt}
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _meaning_of_part(self, part: str) -> str:
+        if part in RADICALS:
+            return RADICALS[part]
+        d = self._api(part) if is_kanji(part) else None
+        if d:
+            return d.get("heisig_en") or ", ".join(d.get("meanings", [])[:2])
+        return ""
+
+    def info(self, ch: str) -> KanjiInfo:
+        if ch in self._info:
+            return self._info[ch]
+        k = KanjiInfo(char=ch)
+        d = self._api(ch) or self._jamdict_info(ch)
+        if d:
+            k.keyword = d.get("heisig_en") or ""
+            k.meanings = list(d.get("meanings") or [])[:5]
+            k.on = list(d.get("on_readings") or [])[:4]
+            k.kun = list(d.get("kun_readings") or [])[:4]
+            k.strokes = d.get("stroke_count")
+            k.grade = d.get("grade")
+            k.jlpt = d.get("jlpt")
+        k.parts = [(STAND_INS.get(p, p), self._meaning_of_part(p)) for p in self._parts(ch)]
+        self._info[ch] = k
+        log.debug("Kanji %s: keyword=%r meanings=%s parts=%s", ch, k.keyword, k.meanings, k.parts)
+        return k
+
+    def breakdown(self, word: str) -> list[KanjiInfo]:
+        seen, out = set(), []
+        for c in word:
+            if is_kanji(c) and c not in "々〆" and c not in seen:
+                seen.add(c)
+                out.append(self.info(c))
+        return out
+
+
+def to_html(infos: list[KanjiInfo], accent: str) -> str:
+    if not infos:
+        return ""
+    h = "<div style='margin-top:8px'><b>Kanji</b></div>"
+    for k in infos:
+        key = k.keyword or (k.meanings[0] if k.meanings else "")
+        h += (f"<div style='margin-top:4px'><span style='font-size:18pt'>{html.escape(k.char)}</span>"
+              f"&nbsp;&nbsp;<b style='color:{accent}'>{html.escape(key)}</b>")
+        tags = []
+        if k.strokes:
+            tags.append(f"{k.strokes} strokes")
+        if k.jlpt:
+            tags.append(f"JLPT N{k.jlpt}")
+        if k.grade:
+            tags.append(f"grade {k.grade}")
+        if tags:
+            h += f" <span style='color:gray;font-size:9pt'>{' · '.join(tags)}</span>"
+        h += "</div>"
+        other = [m for m in k.meanings if m.lower() != key.lower()]
+        if other:
+            h += f"<div style='color:gray'>also: {html.escape(', '.join(other[:4]))}</div>"
+        rd = []
+        if k.on:
+            rd.append("on: " + "、".join(k.on))
+        if k.kun:
+            rd.append("kun: " + "、".join(k.kun))
+        if rd:
+            h += f"<div style='color:gray'>{html.escape('  ·  '.join(rd))}</div>"
+        if k.parts:
+            pieces = " + ".join(
+                f"{html.escape(p)}" + (f" <i style='color:gray'>({html.escape(m)})</i>" if m else "")
+                for p, m in k.parts)
+            h += f"<div>Parts: {pieces}</div>"
+    return h
