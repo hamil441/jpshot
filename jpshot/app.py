@@ -118,6 +118,8 @@ class JPShotApp(QObject):
                 self.result.raise_()
             elif cmd == "settings":
                 self.open_settings()
+            elif cmd == "history":
+                self.result.open_history()
             elif cmd == "quit":
                 QApplication.quit()
         sock.readyRead.connect(read)

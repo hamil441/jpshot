@@ -11,6 +11,7 @@ from __future__ import annotations
 import html
 import logging
 import re
+import time
 
 from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import (QClipboard, QColor, QCursor, QFont, QGuiApplication, QKeySequence,
@@ -346,6 +347,10 @@ class ResultWindow(QWidget):
             from .known import KnownWords
             known = KnownWords()
         self.known = known
+        from .history import History
+        self.history = History()
+        self._pending_capture = None
+        self._history_window = None
         self.setWindowTitle("JPShot")
         self.setStyleSheet(CSS)
         self.resize(940, 640)
@@ -459,6 +464,7 @@ class ResultWindow(QWidget):
         QShortcut(QKeySequence("W"), self, self._play_word)
         QShortcut(QKeySequence("K"), self, self._toggle_known)
         QShortcut(QKeySequence("Ctrl+E"), self, lambda: self.ask_btn.isEnabled() and self.open_ask())
+        QShortcut(QKeySequence("Ctrl+H"), self, self.open_history)
         QShortcut(QKeySequence("Ctrl+,"), self, self.settings_requested.emit)
         QShortcut(QKeySequence("Ctrl+M"), self, lambda: self.mine_btn.isEnabled() and self.mine_requested.emit())
 
@@ -516,6 +522,11 @@ class ResultWindow(QWidget):
         bar.addSpacing(6)
         bar.addWidget(self.known_label)
         bar.addStretch()
+        hist = QToolButton()
+        hist.setText("📜")
+        hist.setToolTip("History of your captures, and words you keep seeing  (Ctrl+H)")
+        hist.clicked.connect(self.open_history)
+        bar.addWidget(hist)
         self.ask_btn = QToolButton()
         self.ask_btn.setText("❓ Ask")
         self.ask_btn.setToolTip("Ask a tutor about this sentence  (Ctrl+E)")
@@ -766,6 +777,9 @@ class ResultWindow(QWidget):
                 self.sections[k].view.set_content("翻訳中… (translating)")
             src, dst, text = "en", "ja", flatten(res.text, "en")
         self.status.setText(f"OCR confidence {res.confidence:.0f}%")
+        from .history import Capture
+        self._pending_capture = (req, Capture(id=time.strftime("%Y%m%d-%H%M%S"), time=time.time(),
+                                              language=res.language, source=res.text, japanese="", english=""))
 
         run_async(translate.translate, text, src, dst, self.cfg.translator,
                   on_done=lambda out: self._translated(req, src, out),
@@ -832,10 +846,12 @@ class ResultWindow(QWidget):
         else:
             self._set_japanese(out)
         self.status.setText(self.status.text() + "  ·  translated")
+        self._save_pending_capture(req)
 
     def _translate_failed(self, req, src, msg):
         if req != self._req:
             return
+        self._save_pending_capture(req)
         log.error("Translation failed: %s", msg)
         text = f"(Translation failed: {msg})"
         if src == "ja":
@@ -1017,6 +1033,7 @@ class ResultWindow(QWidget):
         if req_id != self._diff_req:
             return
         self.difficulty = d
+        self._remember_difficulty(d)
         if d is None:
             self.diff_label.setText("")
             return
@@ -1176,6 +1193,78 @@ class ResultWindow(QWidget):
 
     def _show_pattern(self, pid: str):
         self._pattern_clicked(f"p:{pid}")
+
+    # -- history -------------------------------------------------------------
+    def _save_pending_capture(self, req):
+        if not self._pending_capture or self._pending_capture[0] != req:
+            return
+        cap = self._pending_capture[1]
+        self._pending_capture = None
+        cap.japanese = self.ja_text
+        en = self.sections["english"].view.toPlainText()
+        cap.english = "" if en.startswith(("Translating", "(Translation failed")) else en
+        cap.words = [t.base for line in self.ja_lines for t in line if self.known.counts(t)]
+        try:
+            self.history.add(cap, self.pixmap)
+        except Exception:  # noqa: BLE001
+            log.exception("Could not save capture to history")
+        if self._history_window is not None and self._history_window.isVisible():
+            self._history_window.refresh()
+
+    def _remember_difficulty(self, d):
+        """Store the difficulty on the latest history entry once it's known (best effort)."""
+        if d is None:
+            return
+        try:
+            caps = self.history.all()
+            if caps and caps[0].japanese == self.ja_text and not caps[0].difficulty:
+                import json
+                from dataclasses import asdict
+                lines = self.history.index.read_text(encoding="utf-8").splitlines()
+                last = json.loads(lines[-1])
+                last["difficulty"] = d.jlpt
+                lines[-1] = json.dumps(last, ensure_ascii=False)
+                self.history.index.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def open_history(self):
+        from .history import HistoryWindow
+
+        if self._history_window is None:
+            self._history_window = HistoryWindow(self.history, self.known.is_known_word)
+            self._history_window.open_capture.connect(self.show_saved)
+            self._history_window.mark_known.connect(lambda w: (self.known.mark_word(w), self.known_changed()))
+        self._history_window.refresh()
+        self._history_window.show()
+        self._history_window.raise_()
+        self._history_window.activateWindow()
+
+    def show_saved(self, cap):
+        """Re-open a capture from history (no OCR or translation needed)."""
+        self._req += 1
+        self._pending_capture = None
+        pm = self.history.pixmap(cap)
+        self.pixmap = pm
+        self.copy_img_btn.setEnabled(pm is not None)
+        self.image_view.set_pixmap(pm)
+        self._update_image_visibility()
+        self.mine_btn.setEnabled(True)
+        self.ask_btn.setEnabled(True)
+        self.speaker.stop()
+        self._hide_popup()
+        self.selbar.hide()
+        self._sel_text = ""
+        self._lookup_ctx = None
+        en = self.sections["english"]
+        en.view.set_content(cap.english)
+        en.badge.setText("from history")
+        self._set_japanese(cap.japanese)
+        self._set_ja_badges("from history")
+        self.status.setText(f"Captured {cap.when}")
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     # -- grammar patterns ---------------------------------------------------
     def _update_patterns(self):

@@ -74,6 +74,20 @@ class KnownWords:
                     out.append(t)
         return out
 
+    def is_known_word(self, word: str) -> bool:
+        if word in self.unknown:
+            return False
+        return word in self.known or word in self.anki
+
+    def mark_word(self, word: str, known: bool = True):
+        if known:
+            self.unknown.discard(word)
+            self.known.add(word)
+        else:
+            self.known.discard(word)
+            self.unknown.add(word)
+        self.save()
+
     def known_kanji(self) -> set[str]:
         if self._kanji_cache is None:
             ks = {c for w in (self.known | self.anki) - self.unknown for c in w if is_kanji(c)}

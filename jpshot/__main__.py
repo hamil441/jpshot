@@ -6,6 +6,7 @@
     python -m jpshot ocr IMG      terminal only: print OCR text, language and translation
     python -m jpshot check        check that every dependency is installed and working
     python -m jpshot settings     open the settings window
+    python -m jpshot history      browse past captures
     python -m jpshot quit         stop the running instance
 
 Options:  --debug  verbose logs     --setup-offline  install offline translation models
@@ -115,7 +116,7 @@ def cmd_ocr(cfg: Config, path: str) -> int:
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="jpshot", description="Screenshot → OCR → English/Japanese study popup")
     p.add_argument("command", nargs="?", default="run",
-                   choices=["run", "capture", "file", "ocr", "check", "quit", "show", "settings"])
+                   choices=["run", "capture", "file", "ocr", "check", "quit", "show", "settings", "history"])
     p.add_argument("image", nargs="?", help="image path for `file` / `ocr`")
     p.add_argument("--debug", "-d", action="store_true", help="verbose debug logging")
     p.add_argument("--setup-offline", action="store_true", help="install Argos offline translation models")
@@ -153,7 +154,7 @@ def main(argv=None) -> int:
 
     from .app import JPShotApp, make_icon, send_to_running
 
-    if args.command in ("capture", "quit", "show", "settings") and send_to_running(args.command):
+    if args.command in ("capture", "quit", "show", "settings", "history") and send_to_running(args.command):
         return 0
     if args.command in ("quit", "show"):
         log.info("JPShot is not running")
@@ -178,6 +179,8 @@ def main(argv=None) -> int:
         QTimer.singleShot(400, jp.start_capture)
     elif args.command == "settings":
         QTimer.singleShot(100, jp.open_settings)
+    elif args.command == "history":
+        QTimer.singleShot(100, jp.result.open_history)
     elif args.command == "file":
         from PIL import Image
         img = Image.open(args.image).convert("RGB")
