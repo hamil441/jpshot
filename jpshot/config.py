@@ -81,6 +81,8 @@ class Config:
     known_sync: bool = True          # sync from Anki at start-up (when Anki is running)
     known_query: str = ""            # Anki search to limit which notes count, e.g. deck:Japanese
     known_fields: str = "Word, Vocabulary-Kanji, Expression, Vocab, VocabKanji, Kanji, Front"
+    # After you edit a box: "ask" whether to update the other boxes, "always", or "never"
+    edit_updates: str = "ask"
     furigana_unknown_only: bool = False   # Furigana row: readings only over kanji you don't know
 
     # Anki (via the AnkiConnect add-on)

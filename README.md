@@ -38,7 +38,11 @@ Out of the box JPShot shows only the basics: capture & OCR, the English / Japane
 | History | 📜 (Ctrl+H, `jpshot history`): every capture, searchable, reopenable, plus "words you keep seeing" |
 | Shadowing | 🎙 record yourself, compare with the voice, pitch-contour graph |
 
-Turning a feature off also hides its settings and stops its background work. Right-click any Japanese word for **▶ Play from here** / **▶ Play this phrase**. The English box is editable: change it and click a Japanese box (or Ctrl+Enter) to re-translate.
+Turning a feature off also hides its settings and stops its background work. Right-click any Japanese word for **▶ Play from here** / **▶ Play this phrase**. **Every box is editable.** Type straight into the English box. For the Japanese, Furigana, Hiragana and Rōmaji boxes, press **✎ Edit**. Finish with Ctrl+Enter, **✓ Done** or by clicking elsewhere; Esc cancels. JPShot then asks whether to update the other boxes:
+- If you edited the English, the Japanese boxes are translated from it.
+- If you edited any Japanese box, the other Japanese boxes and the English meaning are updated. Hiragana and rōmaji edits are converted back to kanji with Google's Japanese input (online); offline they stay as kana.
+
+To stop being asked, tick *Remember my choice* in that dialog, or use ⚙ Settings → *After editing a box*.
 
 ## Install
 

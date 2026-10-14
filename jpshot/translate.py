@@ -134,3 +134,37 @@ def install_offline_models() -> None:
         print(f"Installing {src}->{dst} ...")
         argostranslate.package.install_from_path(pkg.download())
     print('Done. Set "translator": "argos" in config.json to always use offline translation.')
+
+
+# -- kana → kanji (for an edited Hiragana / Rōmaji box) --------------------------------------------
+def kana_to_kanji(kana: str) -> str:
+    """Convert hiragana to normal kanji-kana writing with Google's Japanese IME (online).
+    Falls back to the kana unchanged; kana is still valid Japanese."""
+    import re
+
+    out_lines = []
+    for line in kana.split("\n"):
+        parts = re.split(r"([。、！？「」『』（）\s]+)", line)   # convert phrase by phrase
+        conv = []
+        for part in parts:
+            if not part or re.fullmatch(r"[。、！？「」『』（）\s]+", part) or not re.search(r"[ぁ-ゖ]", part):
+                conv.append(part)
+                continue
+            try:
+                r = _http().get("https://inputtools.google.com/request",
+                                params={"text": part, "itc": "ja-t-ja-hira-i0-und", "num": 1,
+                                        "cp": 0, "cs": 1, "ie": "utf-8", "oe": "utf-8"}, timeout=8)
+                data = r.json()
+                cand = data[1][0][1][0] if data and data[0] == "SUCCESS" else ""
+                # only accept a candidate that covers the whole phrase
+                matched = data[1][0][3].get("matched_length") if len(data[1][0]) > 3 and isinstance(data[1][0][3], dict) else None
+                if matched and matched[0] != len(part):
+                    cand = ""
+                conv.append(cand or part)
+            except Exception as e:  # noqa: BLE001
+                log.info("Kana → kanji conversion unavailable (%s); keeping kana", e)
+                return kana
+        out_lines.append("".join(conv))
+    out = "\n".join(out_lines)
+    log.info("Kana → kanji: %s → %s", short(kana), short(out))
+    return out

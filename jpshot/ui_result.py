@@ -16,8 +16,9 @@ import time
 from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import (QClipboard, QColor, QCursor, QFont, QGuiApplication, QKeySequence,
                            QPixmap, QShortcut, QTextCharFormat, QTextCursor)
-from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QSlider,
-                               QSplitter, QTextEdit, QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QCheckBox, QFrame, QHBoxLayout, QLabel, QMessageBox,
+                               QPlainTextEdit, QPushButton, QSlider, QSplitter, QTextEdit, QToolButton,
+                               QVBoxLayout, QWidget)
 
 from . import difficulty, features, grammar, japanese, kanji, lookupkey, patterns, pitch, theme, translate
 from .furigana_view import FuriganaView
@@ -85,9 +86,13 @@ class WordView(QTextEdit):
 
     lookup_requested = Signal(object, QRect)  # Token, global rect of the word
     play_requested = Signal(object, str)      # Token, "from" | "phrase"
+    edited = Signal()                         # the user typed in the box
+    edit_finished = Signal()                  # Ctrl+Enter, or focus moved elsewhere in the window
 
     def __init__(self, font: QFont):
         super().__init__()
+        self._quiet = 0                       # >0 while the program (not the user) changes the text
+        self.textChanged.connect(self._user_changed)
         self.setReadOnly(True)
         self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse
                                      | Qt.TextInteractionFlag.TextSelectableByKeyboard)
@@ -100,19 +105,53 @@ class WordView(QTextEdit):
         self._colored = False
         self.color_fn = grammar.color_for
 
+    def _user_changed(self):
+        if not self._quiet and not self.isReadOnly():
+            self.edited.emit()
+
+    def set_editing(self, on: bool):
+        self.setReadOnly(not on)
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction if on else
+                                     Qt.TextInteractionFlag.TextSelectableByMouse
+                                     | Qt.TextInteractionFlag.TextSelectableByKeyboard)
+
+    def keyPressEvent(self, e):
+        if not self.isReadOnly() and e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) \
+                and e.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.edit_finished.emit()
+            return
+        super().keyPressEvent(e)
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        if not self.isReadOnly() and e.reason() not in (Qt.FocusReason.ActiveWindowFocusReason,
+                                                        Qt.FocusReason.PopupFocusReason):
+            self.edit_finished.emit()
+
     def set_content(self, text: str, spans: list[japanese.Span] | None = None):
-        self.spans = spans or []
-        self._hover = None
-        self._colored = False
-        self.setPlainText(text)
-        self.setExtraSelections([])
-        if self.hover_lookup:
-            self.set_colors(True)
+        self._quiet += 1
+        try:
+            self.spans = spans or []
+            self._hover = None
+            self._colored = False
+            self.setPlainText(text)
+            self.setExtraSelections([])
+            if self.hover_lookup:
+                self.set_colors(True)
+        finally:
+            self._quiet -= 1
 
     def set_colors(self, on: bool):
         """Color each word by its part of speech (grammar mode)."""
         if on == self._colored or (on and not self.spans):
             return
+        self._quiet += 1
+        try:
+            self._apply_colors(on)
+        finally:
+            self._quiet -= 1
+
+    def _apply_colors(self, on: bool):
         cur = QTextCursor(self.document())
         cur.beginEditBlock()
         if not on:
@@ -256,6 +295,37 @@ class WordView(QTextEdit):
             self.lookup_at(e.position().toPoint())
 
 
+class PlainEditor(QPlainTextEdit):
+    """Plain-text editor that stands in for the Furigana box while you edit it."""
+    edited = Signal()
+    edit_finished = Signal()
+
+    def __init__(self, font: QFont):
+        super().__init__()
+        self.setFont(font)
+        self._quiet = 0
+        self.textChanged.connect(lambda: self._quiet or self.edited.emit())
+
+    def set_text(self, text: str):
+        self._quiet += 1
+        try:
+            self.setPlainText(text)
+        finally:
+            self._quiet -= 1
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and e.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.edit_finished.emit()
+            return
+        super().keyPressEvent(e)
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        if self.isVisible() and e.reason() not in (Qt.FocusReason.ActiveWindowFocusReason,
+                                                   Qt.FocusReason.PopupFocusReason):
+            self.edit_finished.emit()
+
+
 class Section(QWidget):
     def __init__(self, key: str, font: QFont):
         super().__init__()
@@ -269,6 +339,14 @@ class Section(QWidget):
         self.badge.setObjectName("muted")
         head.addWidget(self.badge)
         head.addStretch()
+        self.edit_btn = None
+        if key != "english":          # English is always editable; the Japanese boxes on request
+            self.edit_btn = QToolButton()
+            self.edit_btn.setText("✎ Edit")
+            self.edit_btn.setToolTip(f"Edit the {SECTION_TITLES[key]} text, then Ctrl+Enter or ✓ Done.\n"
+                                     "You'll be asked whether to update the other boxes. Esc cancels.")
+            self.edit_btn.setAutoRaise(True)
+            head.addWidget(self.edit_btn)
         self.copy_btn = QToolButton()
         self.copy_btn.setText("Copy")
         self.copy_btn.setToolTip(f"Copy the {SECTION_TITLES[key]} text")
@@ -276,11 +354,20 @@ class Section(QWidget):
         self.copy_btn.clicked.connect(lambda: copy_text(self.view.toPlainText()))
         head.addWidget(self.copy_btn)
         self.view = FuriganaView(font) if key == "furigana" else WordView(font)
+        self.editor = PlainEditor(font) if key == "furigana" else None
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 4, 0, 0)
         lay.setSpacing(2)
         lay.addLayout(head)
         lay.addWidget(self.view, 1)
+        if self.editor is not None:
+            self.editor.hide()
+            lay.addWidget(self.editor, 1)
+
+    @property
+    def edit_widget(self):
+        """The widget that receives typing in this box."""
+        return self.editor if self.editor is not None else self.view
 
 
 # ---------------------------------------------------------------------------
@@ -459,16 +546,21 @@ class ResultWindow(QWidget):
 
         en_view = self.sections["english"].view
         en_view.set_content = self._english_setter(en_view)
-        # the English box is editable: clicking a Japanese box (or Ctrl+Enter) re-translates it
-        en_view.setReadOnly(False)
-        en_view.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
-        en_view.setToolTip("Edit the English — press Ctrl+Enter, or switch to / click a Japanese box, "
-                           "to update the Japanese")
-        self._en_dirty = False
-        self._en_programmatic = False
-        en_view.textChanged.connect(self._english_edited)
-        QShortcut(QKeySequence("Ctrl+Return"), en_view, self._apply_english_edit,
-                  context=Qt.ShortcutContext.WidgetShortcut)
+        # Every box can be edited (English directly, the others with ✎ Edit). When an edit is finished
+        # (Ctrl+Enter, ✓ Done, or clicking elsewhere) you're asked whether to update the other boxes.
+        en_view.set_editing(True)
+        en_view.setToolTip("Edit the English, then press Ctrl+Enter or click elsewhere — "
+                           "you'll be asked whether to update the Japanese boxes")
+        self._editing: set[str] = set()       # boxes in edit mode
+        self._dirty: str | None = None        # the box with unconfirmed changes
+        self._edit_before: dict[str, str] = {}
+        self._en_original = ""
+        for key, sec in self.sections.items():
+            w = sec.edit_widget
+            w.edited.connect(lambda k=key: self._box_edited(k))
+            w.edit_finished.connect(lambda k=key: self._finish_edit(k))
+            if sec.edit_btn is not None:
+                sec.edit_btn.clicked.connect(lambda _=False, k=key: self._toggle_edit(k))
         fv = self.sections["furigana"].view
         if isinstance(fv, FuriganaView):
             fv.set_known_kanji(self.known.known_kanji(), bool(self.cfg.furigana_unknown_only))
@@ -822,12 +914,14 @@ class ResultWindow(QWidget):
         self._apply_section_visibility()
         self._hide_popup()
         log.debug("Boxes shown: %s", self.cfg.sections)
-        # switching to a Japanese box after editing the English re-translates it
-        if key in RENDER_MODE and getattr(self, "_en_dirty", False):
-            self._apply_english_edit()
+        # switching boxes finishes an edit in progress (asks whether to update the others)
+        if self._dirty or self._editing:
+            for k in list(self._editing | ({self._dirty} if self._dirty else set())):
+                self._finish_edit(k)
 
     # -- showing a new capture -------------------------------------------
     def show_result(self, res: OcrResult, anchor: QRect, pixmap: QPixmap | None = None):
+        self._reset_edits()
         self._req += 1
         req = self._req
         self.source = res
@@ -882,40 +976,195 @@ class ResultWindow(QWidget):
 
         def setter(text: str, spans=None):
             is_message = text.startswith(("Translating", "(Translation failed"))
-            self._en_programmatic = True
-            try:
-                base(text, None if is_message else english_spans(text))
-            finally:
-                self._en_programmatic = False
-            self._en_dirty = False
+            base(text, None if is_message else english_spans(text))
+            if not is_message:
+                self._en_original = text          # what Esc goes back to
+            if self._dirty == "english":
+                self._dirty = None
         return setter
 
-    def _english_edited(self):
-        if self._en_programmatic:
-            return
-        en = self.sections["english"]
-        if not self._en_dirty:
-            self._en_dirty = True
-            en.badge.setText("edited — press Ctrl+Enter or switch to a Japanese box to update")
-        en.view.spans = []          # word positions are stale until re-applied
+    # -- editing any box ------------------------------------------------------
+    def _box_text(self, key: str) -> str:
+        sec = self.sections[key]
+        return sec.edit_widget.toPlainText()
 
-    def _apply_english_edit(self):
-        en = self.sections["english"]
-        text = en.view.toPlainText().strip()
-        if not self._en_dirty or not text:
+    def _toggle_edit(self, key: str):
+        if key in self._editing:
+            self._finish_edit(key)
+        else:
+            self._start_edit(key)
+
+    def _start_edit(self, key: str):
+        sec = self.sections[key]
+        self._hide_popup()
+        if key == "furigana":
+            sec.editor.set_text(self.ja_text)   # furigana is edited as normal Japanese text
+            sec.view.hide()
+            sec.editor.show()
+        else:
+            sec.view.set_editing(True)
+        self._edit_before[key] = self._box_text(key)
+        self._editing.add(key)
+        sec.edit_btn.setText("✓ Done")
+        sec.badge.setText("editing — Ctrl+Enter or ✓ Done when finished · Esc cancels")
+        w = sec.edit_widget
+        w.setFocus()
+        w.moveCursor(QTextCursor.MoveOperation.End)
+        log.debug("Editing the %s box", key)
+
+    def _stop_edit_mode(self, key: str):
+        sec = self.sections[key]
+        self._editing.discard(key)
+        if sec.edit_btn is not None:
+            sec.edit_btn.setText("✎ Edit")
+        if key == "furigana":
+            sec.editor.hide()
+            sec.view.show()
+        elif key != "english":
+            sec.view.set_editing(False)
+
+    def _cancel_edits(self) -> bool:
+        """Esc while editing: put the text back. Returns True if something was cancelled."""
+        keys = set(self._editing) | ({self._dirty} if self._dirty else set())
+        if not keys:
+            return False
+        for key in keys:
+            self._edit_before.pop(key, None)
+            if key == "english":
+                self.sections[key].view.set_content(self._en_original)
+            elif key == "furigana":
+                if self.ja_lines:
+                    self.sections[key].view.set_lines(self.ja_lines)
+            else:
+                self._rerender_box(key)
+            if key != "english":
+                self._stop_edit_mode(key)
+            self.sections[key].badge.setText("")
+        self._dirty = None
+        self.status.setText("Edit cancelled")
+        return True
+
+    def _rerender_box(self, key: str):
+        """Redraw one Japanese box from the current sentence (restores word spans and colors)."""
+        if key in RENDER_MODE and key != "furigana":
+            t, spans = japanese.render(self.ja_lines, RENDER_MODE[key]) if self.ja_lines else ("", [])
+            self.sections[key].view.set_content(t, spans)
+
+    def _reset_edits(self):
+        """A new capture replaces whatever was being edited."""
+        for k in list(self._editing):
+            self._stop_edit_mode(k)
+        self._dirty = None
+        self._edit_before.clear()
+
+    def _box_edited(self, key: str):
+        if self._dirty is None:
+            self._dirty = key
+            if key == "english":
+                self.sections[key].badge.setText("edited — Ctrl+Enter or click elsewhere when finished")
+        sec = self.sections[key]
+        if key != "furigana":
+            sec.view.spans = []          # word positions are stale until the box is redrawn
+
+    def _finish_edit(self, key: str):
+        """An edit is done: ask whether to update the other boxes, then do it."""
+        if key not in self._editing and self._dirty != key:
             return
-        self._en_dirty = False
-        en.badge.setText("your edit")
-        en.view.spans = english_spans(en.view.toPlainText())
+        changed = self._dirty == key
+        text = self._box_text(key).strip()
+        self._dirty = None
+        if key != "english":
+            self._stop_edit_mode(key)
+        self._edit_before.pop(key, None)
+        sec = self.sections[key]
+        if not changed or not text:
+            sec.badge.setText("")
+            if key == "furigana" and self.ja_lines:
+                sec.view.set_lines(self.ja_lines)
+            return
+        if not self._confirm_update(key):
+            log.info("Kept the %s edit without updating the other boxes", key)
+            sec.badge.setText("your edit (other boxes not updated)")
+            if key == "furigana":
+                sec.view.set_content(text)
+            return
+        self._apply_edit(key, text)
+
+    def _confirm_update(self, key: str) -> bool:
+        policy = getattr(self.cfg, "edit_updates", "ask")
+        if policy in ("always", "never"):
+            return policy == "always"
+        what = ("the Japanese boxes (translated from your English)" if key == "english" else
+                "the other Japanese boxes and the English meaning")
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Update the other boxes?")
+        box.setText(f"You edited the {SECTION_TITLES[key]} box.\n\nUpdate {what} to match?")
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.Yes)
+        remember = QCheckBox("Remember my choice (change it in Settings)")
+        box.setCheckBox(remember)
+        yes = box.exec() == QMessageBox.StandardButton.Yes
+        if remember.isChecked():
+            self.cfg.edit_updates = "always" if yes else "never"
+            self.cfg.save()
+        return yes
+
+    def _apply_edit(self, key: str, text: str):
         self._req += 1
         req = self._req
+        self._pending_capture = None
+        sec = self.sections[key]
+        if key == "english":
+            sec.badge.setText("your edit")
+            sec.view.spans = english_spans(sec.view.toPlainText())
+            for k in RENDER_MODE:
+                self.sections[k].view.set_content("翻訳中… (translating)")
+            self._set_ja_badges("translated from your English")
+            log.info("Re-translating edited English: %s", short(text))
+            run_async(translate.translate, flatten(text, "en"), "en", "ja", self.cfg.translator,
+                      on_done=lambda out: self._edit_done(req, key, out, text),
+                      on_error=lambda msg: self._translate_failed(req, "en", msg))
+            return
+
+        self.sections["english"].view.set_content("Translating…")
         for k in RENDER_MODE:
-            self.sections[k].view.set_content("翻訳中… (translating)")
-        self._set_ja_badges("translated from your English")
-        log.info("Re-translating edited English: %s", short(text))
-        run_async(translate.translate, flatten(text, "en"), "en", "ja", self.cfg.translator,
-                  on_done=lambda out: self._translated(req, "en", out),
-                  on_error=lambda msg: self._translate_failed(req, "en", msg))
+            if k != key:
+                self.sections[k].view.set_content("更新中… (updating)")
+        log.info("Updating from the edited %s box: %s", key, short(text))
+        backend = self.cfg.translator
+
+        def job():
+            if key == "romaji":
+                ja = translate.kana_to_kanji(japanese.romaji_to_kana(text))
+            elif key == "hiragana":
+                ja = translate.kana_to_kanji(text)
+            else:
+                ja = text
+            return ja, translate.translate(flatten(ja, "ja"), "ja", "en", backend)
+
+        def failed(msg):
+            if req == self._req and key in ("japanese", "furigana"):
+                self._set_japanese(text)          # keep your Japanese even if the translation failed
+            self._translate_failed(req, "ja", msg)
+
+        run_async(job, on_done=lambda res: self._edit_done(req, key, res[0], res[1]), on_error=failed)
+
+    def _edit_done(self, req, key: str, ja: str, en: str):
+        if req != self._req:
+            return
+        self._set_japanese(ja)
+        self.sections["english"].view.set_content(en)
+        self._set_ja_badges("updated from your edit")
+        self.sections["english"].badge.setText("your edit" if key == "english" else "translated from your edit")
+        if key != "english":
+            self.sections[key].badge.setText("your edit")
+        self.status.setText(f"Updated from your {SECTION_TITLES[key]} edit")
+        from .history import Capture
+        cap = Capture(id=time.strftime("%Y%m%d-%H%M%S"), time=time.time(), language="ja",
+                      source=self.source.text if self.source else ja, japanese=ja, english=en)
+        cap.words = [t.base for line in self.ja_lines for t in line if self.known.counts(t)]
+        self.history.save_last(cap, self.pixmap)
 
     def _set_ja_badges(self, text: str):
         for k in RENDER_MODE:
@@ -1391,6 +1640,7 @@ class ResultWindow(QWidget):
     def show_empty(self):
         """Nothing captured yet: a friendly empty window with the 📷 button."""
         log.info("No saved capture yet: showing the empty window")
+        self._reset_edits()
         self._req += 1
         self._pending_capture = None
         self.source, self.pixmap = None, None
@@ -1420,6 +1670,7 @@ class ResultWindow(QWidget):
 
     def show_saved(self, cap, badge: str = "from history", pixmap=None):
         """Re-open a capture from history (no OCR or translation needed)."""
+        self._reset_edits()
         self._req += 1
         self._pending_capture = None
         pm = pixmap if pixmap is not None else self.history.pixmap(cap)
@@ -1580,6 +1831,8 @@ class ResultWindow(QWidget):
         self.status.setText("Copied screenshot to clipboard")
 
     def _escape(self):
+        if self._cancel_edits():
+            return
         if self.popup.isVisible():
             self._hide_popup()
         else:
@@ -1602,9 +1855,6 @@ class ResultWindow(QWidget):
             if v is not None:
                 v.clear_hover()
                 v.lookup_at(v.viewport().mapFromGlobal(QCursor.pos()))
-        if t == QEvent.Type.MouseButtonPress and getattr(self, "_en_dirty", False) and any(
-                obj is self.sections[k].view.viewport() for k in RENDER_MODE):
-            self._apply_english_edit()
         if t == QEvent.Type.MouseButtonPress and self.popup.isVisible() \
                 and any(obj is s.view.viewport() for s in self.sections.values()):
             self._hide_popup()

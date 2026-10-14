@@ -286,3 +286,76 @@ def span_at(spans: list[Span], index: int) -> Span | None:
     if 0 <= i < len(spans) and spans[i].start <= index < spans[i].end:
         return spans[i]
     return None
+
+
+# -- rōmaji → kana (for an edited Rōmaji box) ---------------------------------------
+_R2K = {v: k for k, v in MONO.items() if v and k not in "ぁぃぅぇぉゃゅょゎゐゑをぢづ"}
+_R2K.update({v: k for k, v in DIGRAPHS.items() if k[0] not in "ぢ"})
+_R2K.update({"o": "お", "wo": "を", "si": "し", "ti": "ち", "tu": "つ", "hu": "ふ",
+             "zi": "じ", "di": "ぢ", "du": "づ", "jya": "じゃ", "jyu": "じゅ", "jyo": "じょ", "sya": "しゃ",
+             "syu": "しゅ", "syo": "しょ", "tya": "ちゃ", "tyu": "ちゅ", "tyo": "ちょ", "cya": "ちゃ", "-": "ー"})
+_R2K_MAX = max(len(k) for k in _R2K)
+_PUNCT_KANA = {".": "。", ",": "、", "!": "！", "?": "？", "~": "〜", ":": "：", "(": "（", ")": "）"}
+_STANDALONE_PARTICLES = {"wa": "は", "o": "を", "wo": "を", "e": "へ"}
+
+
+def romaji_to_kana(text: str) -> str:
+    """Hepburn (or kunrei) rōmaji → hiragana. Spaced-out wa / o / e become the particles は / を / へ."""
+    out_lines = []
+    for line in text.split("\n"):
+        words = []
+        for word in line.split():
+            low = word.lower()
+            core = low.strip(".,!?\"'")
+            if core in _STANDALONE_PARTICLES and words:
+                words.append(low.replace(core, _STANDALONE_PARTICLES[core], 1))
+                continue
+            words.append(low)
+        s = "".join(words)
+        for a, b in (("ā", "aa"), ("ī", "ii"), ("ū", "uu"), ("ē", "ei"), ("ō", "ou"), ("â", "aa"), ("ô", "ou"), ("û", "uu")):
+            s = s.replace(a, b)
+        out, i = [], 0
+        while i < len(s):
+            c = s[i]
+            if c == '"':
+                out.append("「" if out.count("「") <= out.count("」") else "」")
+                i += 1
+                continue
+            if c in _PUNCT_KANA:
+                out.append(_PUNCT_KANA[c])
+                i += 1
+                continue
+            nxt = s[i + 1] if i + 1 < len(s) else ""
+            if c == nxt and c.isalpha() and c not in "aeioun":      # double consonant: っ
+                out.append("っ")
+                i += 1
+                continue
+            if c == "t" and s[i + 1:i + 3] == "ch":                   # matcha
+                out.append("っ")
+                i += 1
+                continue
+            if c == "n":
+                after = s[i + 2] if i + 2 < len(s) else ""
+                if nxt == "'":                                         # kon'ya
+                    out.append("ん")
+                    i += 2
+                    continue
+                if nxt == "n":                                         # konnichiwa / shinnen: ん + n…
+                    out.append("ん")
+                    i += 1 if after in "aeiouy" and after else 2
+                    continue
+                if not nxt or nxt not in "aeiouy":
+                    out.append("ん")
+                    i += 1
+                    continue
+            for size in range(min(_R2K_MAX, len(s) - i), 0, -1):
+                piece = s[i:i + size]
+                if piece in _R2K:
+                    out.append(_R2K[piece])
+                    i += size
+                    break
+            else:
+                out.append(c)
+                i += 1
+        out_lines.append("".join(out))
+    return "\n".join(out_lines)

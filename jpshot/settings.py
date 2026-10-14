@@ -61,6 +61,12 @@ class SettingsDialog(QDialog):
         self.capture_hotkey.setPlaceholderText("optional, e.g. <ctrl>+<print_screen>")
         self.capture_hotkey.setToolTip("A second hotkey that always takes a new screenshot")
         f.addRow("Screenshot hotkey", self.capture_hotkey)
+        self.edit_updates = QComboBox()
+        for label, val in (("Ask me", "ask"), ("Always update the other boxes", "always"),
+                           ("Never (only change the box I edited)", "never")):
+            self.edit_updates.addItem(label, val)
+        self.edit_updates.setCurrentIndex(max(0, self.edit_updates.findData(cfg.edit_updates)))
+        f.addRow("After editing a box", self.edit_updates)
         self.tesseract = QLineEdit(cfg.tesseract_cmd)
         self.tesseract.setPlaceholderText("auto-detect")
         f.addRow("Tesseract path", self.tesseract)
@@ -316,6 +322,7 @@ class SettingsDialog(QDialog):
         c.hotkey = self.hotkey.text().strip()
         c.hotkey_action = self.hotkey_action.currentData() or "open"
         c.capture_hotkey = self.capture_hotkey.text().strip()
+        c.edit_updates = self.edit_updates.currentData() or "ask"
         c.tesseract_cmd = self.tesseract.text().strip()
         c.ocr_min_confidence = self.min_conf.value()
         c.translator = self.translator.currentData()
