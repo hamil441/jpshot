@@ -60,9 +60,13 @@ class Config:
     # Which rows the result window shows, in order
     sections: list = field(default_factory=lambda: ["japanese"])
 
-    # Optional: Anthropic API key for short RTK-style kanji stories (also read from ANTHROPIC_API_KEY)
-    anthropic_api_key: str = ""
+    # Story writer for kanji/word explanations: auto (API key if set, else a running Ollama),
+    # anthropic, ollama or none
+    story_provider: str = "auto"
+    anthropic_api_key: str = ""      # also read from ANTHROPIC_API_KEY
     story_model: str = "claude-haiku-5-5"
+    ollama_url: str = "http://127.0.0.1:11434"
+    ollama_model: str = "qwen2.5:7b"
 
     # Anki (via the AnkiConnect add-on)
     anki_url: str = "http://127.0.0.1:8765"

@@ -22,13 +22,17 @@ class Entry:
     word: str
     reading: str
     senses: list[Sense]
+    common: bool | None = None   # marked as a common word
+    jlpt: int | None = None      # 5 (N5, easiest) … 1 (N1)
 
 
 class Dictionary(QObject):
     # request id, query that matched (or ""), list[Entry], error message ("" if ok)
     finished = Signal(int, str, object, str)
-    # request id, list[kanji.KanjiInfo]
+    # request id, {"infos": list[kanji.KanjiInfo], "word", "word_story", "hint"}
     kanji_finished = Signal(int, object)
+    # request id, difficulty.Difficulty or None
+    difficulty_finished = Signal(int, object)
 
     def __init__(self, backend: str = "auto"):
         super().__init__()
@@ -57,45 +61,58 @@ class Dictionary(QObject):
             self._jam_failed = backend == "jisho"
             self._cache.clear()
 
-    def lookup_kanji(self, req_id: int, word: str) -> None:
+    def estimate_difficulty(self, req_id: int, lines) -> None:
+        from .difficulty import estimate
+
+        def entries_for(word):
+            try:
+                return self._lookup_one(word)
+            except Exception:  # noqa: BLE001
+                return []
+
+        def job():
+            try:
+                d = estimate(lines, self.kanji._api, entries_for)
+            except Exception:  # noqa: BLE001
+                log.exception("Difficulty estimate failed")
+                d = None
+            self.difficulty_finished.emit(req_id, d)
+
+        self._exec.submit(job)
+
+    def lookup_kanji(self, req_id: int, word: str, candidates: list[str] | None = None) -> None:
+        from .kanji import template_word_story
+
         def job():
             try:
                 infos = self.kanji.breakdown(word)
             except Exception:  # noqa: BLE001
                 log.exception("Kanji breakdown for %s failed", word)
                 infos = []
-            self.kanji_finished.emit(req_id, infos)
-            # second pass: AI stories (only with an API key), then update the popup again
-            changed = False
+            meaning, reading = "", ""
+            for q in candidates or [word]:
+                entries = self._cache.get(q)
+                if entries:
+                    e = entries[0]
+                    reading = e.reading
+                    meaning = "; ".join(e.senses[0].glosses[:3]) if e.senses else ""
+                    break
+            payload = {"infos": infos, "word": word,
+                       "word_story": template_word_story(word, meaning, infos),
+                       "hint": not self.kanji.has_writer()}
+            self.kanji_finished.emit(req_id, payload)
+            if not infos or not self.kanji.has_writer():
+                return
+            # second pass: written explanations, then update the popup again
+            ws = self.kanji.word_story(word, reading, meaning, infos)
+            if ws:
+                payload["word_story"] = ws
             for k in infos:
                 if not k.story_is_ai:
                     story = self.kanji.story(k)
                     if story:
                         k.story, k.story_is_ai = story, True
-                        changed = True
-            if changed:
-                self.kanji_finished.emit(req_id, infos)
-
-        self._exec.submit(job)
-
-    def lookup(self, req_id: int, candidates: list[str]) -> None:
-        def job():
-            t = time.perf_counter()
-            log.debug("Lookup #%d candidates=%s", req_id, candidates)
-            try:
-                for q in candidates:
-                    entries = self._lookup_one(q)
-                    if entries:
-                        log.info("Lookup %s -> %d entr%s (%.0f ms): %s", q, len(entries),
-                                 "y" if len(entries) == 1 else "ies", (time.perf_counter() - t) * 1000,
-                                 "; ".join(", ".join(s.glosses[:2]) for e in entries[:1] for s in e.senses[:2]))
-                        self.finished.emit(req_id, q, entries, "")
-                        return
-                log.info("Lookup %s -> no entries", candidates)
-                self.finished.emit(req_id, "", [], "")
-            except Exception as e:  # noqa: BLE001
-                log.exception("Lookup %s failed", candidates)
-                self.finished.emit(req_id, "", [], f"{type(e).__name__}: {e}")
+                self.kanji_finished.emit(req_id, payload)
 
         self._exec.submit(job)
 
@@ -135,7 +152,10 @@ class Dictionary(QObject):
             kanji = [k.text for k in ent.kanji_forms]
             kana = [k.text for k in ent.kana_forms]
             senses = [Sense([g.text for g in s.gloss], list(s.pos)) for s in ent.senses[:5]]
-            out.append(Entry(word=(kanji or kana or [q])[0], reading=(kana or [""])[0], senses=senses))
+            pri = {p for f in list(ent.kanji_forms) + list(ent.kana_forms) for p in (getattr(f, "pri", None) or [])}
+            common = bool(pri & {"news1", "ichi1", "spec1", "spec2", "gai1"})
+            out.append(Entry(word=(kanji or kana or [q])[0], reading=(kana or [""])[0], senses=senses,
+                             common=common))
         return out
 
     def _jisho(self, q: str) -> list[Entry]:
@@ -154,6 +174,8 @@ class Dictionary(QObject):
             j = (d.get("japanese") or [{}])[0]
             senses = [Sense(s.get("english_definitions", []), s.get("parts_of_speech", []))
                       for s in d.get("senses", [])[:5] if s.get("english_definitions")]
+            levels = [int(x[-1]) for x in d.get("jlpt", []) if x[-1:].isdigit()]
             out.append(Entry(word=j.get("word") or j.get("reading", q),
-                             reading=j.get("reading", ""), senses=senses))
+                             reading=j.get("reading", ""), senses=senses,
+                             common=bool(d.get("is_common")), jlpt=max(levels) if levels else None))
         return out

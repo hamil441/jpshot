@@ -16,7 +16,7 @@ log = logging.getLogger("jpshot.anki")
 
 MODEL_NAME = "JPShot Sentence"
 FIELDS = ["Sentence", "Furigana", "English", "Image", "Audio", "HearingAudio", "Word", "WordReading",
-          "WordMeaning", "Notes", "Reading", "Hearing", "RandomFont", "Voice"]
+          "WordMeaning", "Notes", "Reading", "Hearing", "RandomFont", "Voice", "Difficulty"]
 
 # Japanese fonts to pick from; only the ones installed on the reviewing device are used.
 FONTS = [
@@ -68,7 +68,8 @@ ANSWER = """<div class="jps-img">{{Image}}</div>
 <div class="jps-furigana">{{furigana:Furigana}}</div>
 <div class="jps-english">{{English}}</div>
 """ + WORD + """
-{{#Notes}}<div class="jps-notes">{{Notes}}</div>{{/Notes}}"""
+{{#Notes}}<div class="jps-notes">{{Notes}}</div>{{/Notes}}
+{{#Difficulty}}<div class="jps-difficulty">{{Difficulty}}</div>{{/Difficulty}}"""
 
 READING_FRONT = """{{#Reading}}
 <div class="jps-img">{{Image}}</div>
@@ -109,6 +110,7 @@ CSS = """
 .nightMode .jps-wordmeaning { color: #aaa; }
 .jps-notes { margin-top: .8em; font-size: .85em; color: #777; white-space: pre-line; }
 .jps-listen { font-size: 1.6em; margin: .8em; }
+.jps-difficulty { margin-top: .6em; font-size: .75em; color: #999; }
 .jps-voice { font-size: .55em; color: #999; }
 .jps-shuffle { border: none; background: transparent; font-size: 1.1em; cursor: pointer; opacity: .6; }
 .jps-shuffle:hover { opacity: 1; }

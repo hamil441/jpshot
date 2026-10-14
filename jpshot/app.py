@@ -194,8 +194,13 @@ class JPShotApp(QObject):
             self._setup_hotkey()
 
     def _apply_story_settings(self):
-        self.dictionary.kanji.api_key = self.cfg.anthropic_api_key.strip()
-        self.dictionary.kanji.story_model = self.cfg.story_model.strip() or "claude-haiku-5-5"
+        k = self.dictionary.kanji
+        k.provider = self.cfg.story_provider
+        k.api_key = self.cfg.anthropic_api_key.strip()
+        k.story_model = self.cfg.story_model.strip() or "claude-haiku-5-5"
+        k.ollama_url = self.cfg.ollama_url.strip().rstrip("/") or "http://127.0.0.1:11434"
+        k.ollama_model = self.cfg.ollama_model.strip() or "qwen2.5:7b"
+        k._ollama_ok = None
 
     def toggle_theme(self):
         self.cfg.theme = "light" if theme.is_dark(self.cfg.theme) else "dark"

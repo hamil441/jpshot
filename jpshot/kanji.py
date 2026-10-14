@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import sys
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -183,18 +184,24 @@ def layout_sentence(k: "KanjiInfo") -> str:
 
 
 def template_story(k: "KanjiInfo") -> str:
-    """Fallback without AI: layout + origin, at most 3 sentences."""
+    """Fallback without a story writer: the layout, plus the origin when it explains the meaning."""
     sentences = []
     lay = layout_sentence(k)
     if lay:
         sentences.append(lay)
-    if k.origin:
-        short, expl = origin_kind(k.origin)
-        orig = split_sentences(k.origin)
-        if short:
-            sentences.append(f"It's {short}: {expl}.")
-        sentences += orig[:1]
+    kind = origin_kind(k.origin)[0] if k.origin else ""
+    if kind in ("meanings combined", "picture", "symbol"):
+        # e.g. "Ideogrammatic compound: 亻 (“person”) + 木 (“tree”) – a person resting against a tree."
+        orig = split_sentences(re.sub(r"^[^:]*compound[^:]*:\s*|^(?:Pictogram|Ideogram)\s*[–:-]\s*", "", k.origin))
+        sentences += orig[:2]
     return " ".join(sentences[:3])
+
+
+def template_word_story(word: str, meaning: str, infos: list["KanjiInfo"]) -> str:
+    if len(infos) < 2:
+        return ""
+    parts = " + ".join(f"{k.char} {k.keyword or (k.meanings[0] if k.meanings else '')}".strip() for k in infos)
+    return f"{parts} → {word}" + (f": {meaning}." if meaning else ".")
 
 
 def cache_dir() -> Path:
@@ -231,8 +238,12 @@ class KanjiDB:
             self._stories: dict[str, str] = json.loads(self._story_path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             self._stories = {}
+        self.provider = "auto"        # auto | anthropic | ollama | none
         self.api_key = ""
         self.story_model = "claude-haiku-5-5"
+        self.ollama_url = "http://127.0.0.1:11434"
+        self.ollama_model = "qwen2.5:7b"
+        self._ollama_ok: tuple[float, bool] | None = None
         try:
             self._origins: dict[str, str] = json.loads(self._origin_path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
@@ -270,23 +281,33 @@ class KanjiDB:
     def _kanjivg(self, ch: str) -> str | None:
         d = cache_dir() / "kanjivg"
         d.mkdir(exist_ok=True)
-        path = d / f"{ord(ch):05x}.svg"
-        if path.exists():
-            text = path.read_text(encoding="utf-8")
-            return text or None
-        url = f"https://raw.githubusercontent.com/KanjiVG/kanjivg/master/kanji/{ord(ch):05x}.svg"
-        try:
-            r = self._session_factory().get(url, timeout=10)
-            log.debug("KanjiVG %s -> HTTP %s", ch, r.status_code)
-            if r.status_code == 404:
-                path.write_text("", encoding="utf-8")   # remember: no data for this kanji
-                return None
-            r.raise_for_status()
-            path.write_text(r.text, encoding="utf-8")
-            return r.text
-        except Exception as e:  # noqa: BLE001
-            log.warning("KanjiVG download for %s failed: %s", ch, e)
+        name = f"{ord(ch):05x}.svg"
+        path = d / name
+        missing = d / (name + ".missing")
+        if path.exists() and path.stat().st_size:
+            return path.read_text(encoding="utf-8")
+        if missing.exists() and time.time() - missing.stat().st_mtime < 7 * 86400:
             return None
+        urls = [f"https://raw.githubusercontent.com/KanjiVG/kanjivg/master/kanji/{name}",
+                f"https://cdn.jsdelivr.net/gh/KanjiVG/kanjivg@master/kanji/{name}"]
+        not_found = 0
+        for url in urls:
+            try:
+                r = self._session_factory().get(url, timeout=10)
+                if r.status_code == 404:
+                    not_found += 1
+                    log.info("KanjiVG has no drawing for %s (%s)", ch, url)
+                    continue
+                r.raise_for_status()
+                text = r.content.decode("utf-8")
+                path.write_text(text, encoding="utf-8")
+                log.info("KanjiVG drawing for %s downloaded from %s", ch, url.split("/")[2])
+                return text
+            except Exception as e:  # noqa: BLE001
+                log.warning("KanjiVG download for %s from %s failed: %s", ch, url.split("/")[2], e)
+        if not_found == len(urls):
+            missing.write_text("", encoding="utf-8")
+        return None
 
     @staticmethod
     def _vg_split(svg_text: str, ch: str):
@@ -338,52 +359,116 @@ class KanjiDB:
                 g.set("style", re.sub(r"stroke-width:[\d.]+", "stroke-width:4", st))
         return [(el, parts[el]["pos"]) for el in order], ET.tostring(root, encoding="unicode")
 
-    # -- AI story ---------------------------------------------------------------
-    def story(self, k: KanjiInfo) -> str:
-        key = self.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        if not key:
-            return ""
-        cache_key = f"{k.char}|{self.story_model}"
-        if cache_key in self._stories:
-            return self._stories[cache_key]
-        parts = "; ".join(
-            f"{p} '{m or '?'}'" + (f" ({POSITION_WORDS.get(k.part_positions[i], '')})"
-                                   if i < len(k.part_positions) and k.part_positions[i] in POSITION_WORDS else "")
-            for i, (p, m) in enumerate(k.parts)) or "(no separate parts)"
-        prompt = (
-            f"Write a mnemonic for the kanji {k.char} in the style of Heisig's \"Remembering the Kanji\".\n"
-            f"Keyword: {k.keyword or (k.meanings[0] if k.meanings else '?')}. "
-            f"Other meanings: {', '.join(k.meanings[:4]) or '-'}.\n"
-            f"Parts, in the order they appear, with position: {parts}.\n"
-            f"Etymology (use it if it helps, ignore if not): {k.origin or '-'}\n"
-            "Rules: at most 3 short sentences. Walk through the parts in order, naming each by its "
-            "meaning with the character in parentheses, and connect them vividly and logically so the "
-            "picture makes the keyword feel inevitable. End on the keyword. Plain text only: no title, "
-            "no quotes, no markdown, no preamble."
-        )
+    # -- story writer (LLM) -------------------------------------------------------
+    def _active_provider(self) -> str:
+        if self.provider in ("anthropic", "ollama", "none"):
+            if self.provider == "anthropic" and not self._key():
+                return "none"
+            return self.provider
+        if self._key():
+            return "anthropic"
+        return "ollama" if self._ollama_running() else "none"
+
+    def has_writer(self) -> bool:
+        return self._active_provider() != "none"
+
+    def _key(self) -> str:
+        return self.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+
+    def _ollama_running(self) -> bool:
+        if self._ollama_ok and time.time() - self._ollama_ok[0] < 60:
+            return self._ollama_ok[1]
         try:
-            r = self._session_factory().post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": key, "anthropic-version": "2023-06-01",
-                         "content-type": "application/json"},
-                json={"model": self.story_model, "max_tokens": 220,
-                      "messages": [{"role": "user", "content": prompt}]},
-                timeout=30)
-            if r.status_code != 200:
-                log.warning("Kanji story for %s: API HTTP %s: %s", k.char, r.status_code, r.text[:300])
-                return ""
-            text = "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
-        except Exception as e:  # noqa: BLE001
-            log.warning("Kanji story for %s failed: %s", k.char, e)
-            return ""
-        text = " ".join(split_sentences(re.sub(r"\s+", " ", text).strip())[:3])
-        log.info("Kanji story %s: %s", k.char, text)
-        self._stories[cache_key] = text
-        try:
-            self._story_path.write_text(json.dumps(self._stories, ensure_ascii=False), encoding="utf-8")
+            ok = self._session_factory().get(f"{self.ollama_url}/api/tags", timeout=0.8).status_code == 200
         except Exception:  # noqa: BLE001
-            pass
+            ok = False
+        self._ollama_ok = (time.time(), ok)
+        return ok
+
+    def _model_id(self, provider: str) -> str:
+        return self.story_model if provider == "anthropic" else self.ollama_model
+
+    def _llm(self, prompt: str) -> str:
+        provider = self._active_provider()
+        sess = self._session_factory()
+        if provider == "anthropic":
+            r = sess.post("https://api.anthropic.com/v1/messages",
+                          headers={"x-api-key": self._key(), "anthropic-version": "2023-06-01",
+                                   "content-type": "application/json"},
+                          json={"model": self.story_model, "max_tokens": 260,
+                                "messages": [{"role": "user", "content": prompt}]}, timeout=40)
+            if r.status_code != 200:
+                raise RuntimeError(f"Anthropic API HTTP {r.status_code}: {r.text[:200]}")
+            text = "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
+        elif provider == "ollama":
+            r = sess.post(f"{self.ollama_url}/api/chat",
+                          json={"model": self.ollama_model, "stream": False,
+                                "messages": [{"role": "user", "content": prompt}],
+                                "options": {"temperature": 0.7}}, timeout=120)
+            if r.status_code != 200:
+                raise RuntimeError(f"Ollama HTTP {r.status_code}: {r.text[:200]} "
+                                   f"(did you run `ollama pull {self.ollama_model}`?)")
+            text = r.json().get("message", {}).get("content", "")
+        else:
+            return ""
+        text = re.sub(r"[*_#`]+", "", re.sub(r"\s+", " ", text)).strip().strip('"')
+        return " ".join(split_sentences(text)[:3])
+
+    def _cached_llm(self, cache_key: str, prompt: str, what: str) -> str:
+        provider = self._active_provider()
+        if provider == "none":
+            return ""
+        key = f"{cache_key}|{provider}:{self._model_id(provider)}"
+        if key in self._stories:
+            return self._stories[key]
+        try:
+            text = self._llm(prompt)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Story for %s failed: %s", what, e)
+            return ""
+        if text:
+            log.info("Story for %s (%s): %s", what, provider, text)
+            self._stories[key] = text
+            try:
+                self._story_path.write_text(json.dumps(self._stories, ensure_ascii=False), encoding="utf-8")
+            except Exception:  # noqa: BLE001
+                pass
         return text
+
+    def story(self, k: KanjiInfo) -> str:
+        parts = "; ".join(
+            f"{p} = '{m or '?'}'" + (f", {POSITION_WORDS[k.part_positions[i]]}"
+                                     if i < len(k.part_positions) and k.part_positions[i] in POSITION_WORDS else "")
+            for i, (p, m) in enumerate(k.parts)) or "no separate parts (it is a basic picture/symbol)"
+        keyword = k.keyword or (k.meanings[0] if k.meanings else "?")
+        prompt = (
+            f"You help an English speaker remember the kanji {k.char} "
+            f"(keyword: \"{keyword}\"; meanings: {', '.join(k.meanings[:5]) or keyword}).\n"
+            f"Its parts: {parts}.\n"
+            f"Real origin (may be useful): {k.origin or 'unknown'}\n\n"
+            "In AT MOST 3 short sentences, explain WHY these parts add up to this meaning, as a vivid, "
+            "logical picture or mini-story in the style of Remembering the Kanji, so the meaning feels "
+            "obvious and sticks. If the real origin gives a memorable reason, build on it; if a part is only "
+            "there for its sound, say so in a few words and build the picture from the other part. Refer to "
+            "each part by its meaning with the character in parentheses. Do not name the formation type, do "
+            "not list readings, no preamble, no markdown."
+        )
+        return self._cached_llm(f"kanji|{k.char}", prompt, k.char)
+
+    def word_story(self, word: str, reading: str, meaning: str, infos: list[KanjiInfo]) -> str:
+        if len(infos) < 2:
+            return ""
+        kanji = "; ".join(f"{k.char} = '{k.keyword or (k.meanings[0] if k.meanings else '?')}' "
+                          f"(also: {', '.join(k.meanings[:4])})" for k in infos)
+        prompt = (
+            f"Explain to an English-speaking Japanese learner why the word {word}"
+            f"{f' ({reading})' if reading else ''} means \"{meaning or '?'}\".\n"
+            f"Its kanji: {kanji}.\n\n"
+            "In AT MOST 3 short sentences, show how the kanji meanings combine into the word's meaning in a "
+            "way that sticks: logical first, vivid if it helps. Mention each kanji with its meaning. "
+            "Plain text only, no preamble, no markdown."
+        )
+        return self._cached_llm(f"word|{word}", prompt, word)
 
     # -- components -------------------------------------------------------
     def _load_krad(self) -> dict[str, list[str]]:
@@ -503,8 +588,11 @@ class KanjiDB:
                 split = self._vg_split(svg_text, ch)
             except Exception:  # noqa: BLE001
                 log.exception("Could not read KanjiVG data for %s", ch)
+        if svg_text and not split:
+            log.warning("KanjiVG drawing for %s could not be split into parts", ch)
         if split:
             vg_parts, k.svg = split
+            log.info("Kanji %s parts (KanjiVG): %s", ch, " + ".join(el for el, _ in vg_parts) or "(single part)")
             k.parts = [(el, self._meaning_of_part(el)) for el, _pos in vg_parts]
             k.part_positions = [pos for _el, pos in vg_parts]
         else:
@@ -527,7 +615,7 @@ class KanjiDB:
         return out
 
 
-def render_png(k: KanjiInfo, size: int = 84) -> str:
+def render_png(k: KanjiInfo, size: int = 110) -> str:
     """Render the colored KanjiVG drawing to a PNG for the popup (call on the UI thread)."""
     if not k.svg:
         return ""
@@ -549,16 +637,20 @@ def render_png(k: KanjiInfo, size: int = 84) -> str:
     return str(path)
 
 
-def to_html(infos: list[KanjiInfo], accent: str) -> str:
+def to_html(infos: list[KanjiInfo], accent: str, word: str = "", word_story: str = "",
+            show_hint: bool = False) -> str:
     if not infos:
         return ""
     from PySide6.QtCore import QUrl
 
     h = "<div style='margin-top:8px'><b>Kanji</b></div>"
+    if word_story:
+        h += (f"<div style='margin:2px 0 6px 0'><b>Why {html.escape(word)} means this:</b> "
+              f"{html.escape(word_story)}</div>")
     for k in infos:
         key = k.keyword or (k.meanings[0] if k.meanings else "")
         if k.image_path:
-            pic = f"<img src='{QUrl.fromLocalFile(k.image_path).toString()}' width='84' height='84'>"
+            pic = f"<img src='{QUrl.fromLocalFile(k.image_path).toString()}' width='110' height='110'>"
         else:
             pic = f"<span style='font-size:40pt'>{html.escape(k.char)}</span>"
         info = f"<b style='color:{accent};font-size:13pt'>{html.escape(key)}</b>"
@@ -583,6 +675,9 @@ def to_html(infos: list[KanjiInfo], accent: str) -> str:
         h += (f"<table cellspacing='0' cellpadding='2' style='margin-top:4px'><tr>"
               f"<td valign='top'>{pic}</td><td valign='top'>{info}</td></tr></table>")
         if k.story:
-            label = "Story" if k.story_is_ai else "How it fits"
+            label = "Why" if k.story_is_ai else "Layout"
             h += f"<div style='margin:0 0 4px 4px'><b>{label}:</b> {html.escape(k.story)}</div>"
+    if show_hint:
+        h += ("<div style='color:gray;font-size:9pt;margin-top:4px'>For memorable explanations of why the "
+              "parts mean this, set up a story writer in ⚙ Settings (free local Ollama, or an API key).</div>")
     return h

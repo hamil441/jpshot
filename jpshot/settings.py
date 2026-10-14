@@ -87,17 +87,28 @@ class SettingsDialog(QDialog):
         f.addRow("Dictionary", self.dictionary)
 
         # -- Kanji stories ---------------------------------------------------
-        story = QGroupBox("Kanji stories (optional)")
+        story = QGroupBox("Explanations: why kanji and words mean what they do")
         f = QFormLayout(story)
+        self.provider = _combo([("auto", "Automatic (API key if set, else Ollama if running)"),
+                                ("ollama", "Ollama — free, runs on this computer"),
+                                ("anthropic", "Anthropic API (needs a key)"),
+                                ("none", "Off (layout only)")], cfg.story_provider)
+        f.addRow("Story writer", self.provider)
+        self.ollama_model = QLineEdit(cfg.ollama_model)
+        self.ollama_model.setToolTip("Any model you've pulled, e.g. qwen2.5:7b, gemma3:12b, llama3.1:8b")
+        f.addRow("Ollama model", self.ollama_model)
+        self.ollama_url = QLineEdit(cfg.ollama_url)
+        f.addRow("Ollama address", self.ollama_url)
         self.api_key = QLineEdit(cfg.anthropic_api_key)
         self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.api_key.setPlaceholderText("Anthropic API key (sk-ant-…) — leave empty to skip")
         f.addRow("API key", self.api_key)
         self.story_model = QLineEdit(cfg.story_model)
-        f.addRow("Model", self.story_model)
-        expl = QLabel("With a key, each kanji gets a short (≤3 sentence) Remembering-the-Kanji-style "
-                      "story, written once and saved. Without one, JPShot shows how the parts are laid out "
-                      "and where the character comes from. The key is stored in config.json.")
+        f.addRow("Anthropic model", self.story_model)
+        expl = QLabel("Each kanji gets a short (≤3 sentence) explanation of why its parts mean what they "
+                      "do, and each multi-kanji word gets one for why its kanji combine into its meaning. "
+                      "They're written once and saved.\nFree option: install Ollama (Arch: pacman -S ollama), "
+                      "run `ollama pull qwen2.5:7b`, keep it running. The API key is stored in config.json.")
         expl.setWordWrap(True)
         expl.setStyleSheet("color:gray")
         f.addRow(expl)
@@ -197,6 +208,9 @@ class SettingsDialog(QDialog):
         c.theme = self.theme.currentData()
         c.lookup_key = self.lookup_key.currentData()
         c.anthropic_api_key = self.api_key.text().strip()
+        c.story_provider = self.provider.currentData()
+        c.ollama_model = self.ollama_model.text().strip() or "qwen2.5:7b"
+        c.ollama_url = self.ollama_url.text().strip() or "http://127.0.0.1:11434"
         c.story_model = self.story_model.text().strip() or "claude-haiku-5-5"
         c.japanese_font_size = self.ja_size.value()
         c.english_font_size = self.en_size.value()

@@ -32,6 +32,7 @@ TEXT_CONTENT = [
     ("word_reading", "Word reading"),
     ("word_meaning", "Word meaning"),
     ("word_pos", "Word part of speech"),
+    ("difficulty", "Difficulty (≈JLPT)"),
     ("notes", "Notes"),
 ]
 WORD_KEYS = ("word_furigana", "word_reading", "word_meaning", "word_pos")
@@ -48,6 +49,8 @@ def guess_content(field_name: str, all_fields: list[str] | None = None) -> str:
     has_vocab_fields = any(any(w in o for w in ("vocab", "word")) for o in others)
     wordish = any(w in f for w in ("word", "vocab", "target", "term"))
     sentencey = "sentence" in f or (has_vocab_fields and not wordish)
+    if any(k in f for k in ("difficulty", "level", "jlpt")):
+        return "difficulty"
     if any(k in f for k in ("audio", "sound", "voice")):
         return "audio"
     if any(k in f for k in ("image", "picture", "screenshot", "photo", "pic")):
@@ -206,7 +209,10 @@ class MineDialog(QDialog):
         model_row.addWidget(self.model, 1)
         model_row.addWidget(self.jps_btn)
         tf.addRow("Note type", model_row)
-        self.tags = QLineEdit(cfg.anki_tags)
+        tags = cfg.anki_tags
+        if data.get("difficulty_tag"):
+            tags = (tags + " " + data["difficulty_tag"]).strip()
+        self.tags = QLineEdit(tags)
         self.tags.setPlaceholderText("space-separated tags")
         tf.addRow("Tags", self.tags)
 
@@ -554,7 +560,7 @@ class MineDialog(QDialog):
 
         # remember choices
         self.cfg.anki_deck, self.cfg.anki_model = deck, model
-        self.cfg.anki_tags = self.tags.text()
+        self.cfg.anki_tags = " ".join(x for x in self.tags.text().split() if not x.startswith("difficulty::"))
         self.cfg.anki_audio = self.audio.isChecked()
         self.cfg.anki_field_map = {**self.cfg.anki_field_map, model: mapping}
         self.cfg.save()
@@ -593,6 +599,7 @@ class MineDialog(QDialog):
             "Hearing": "1" if hearing else "",
             "RandomFont": "1" if self.random_font.isChecked() else "",
             "Voice": "",
+            "Difficulty": _as_field_html(t["difficulty"]),
         }
         note = {"deckName": self.deck.currentText(), "modelName": MODEL_NAME, "fields": fields,
                 "tags": self.tags.text().split(),
@@ -607,7 +614,7 @@ class MineDialog(QDialog):
                           "speed": speed, "fields": ["HearingAudio"]})
 
         self.cfg.anki_deck, self.cfg.anki_model = self.deck.currentText(), MODEL_NAME
-        self.cfg.anki_tags = self.tags.text()
+        self.cfg.anki_tags = " ".join(x for x in self.tags.text().split() if not x.startswith("difficulty::"))
         self.cfg.anki_reading, self.cfg.anki_hearing = reading, hearing
         self.cfg.anki_random_font = self.random_font.isChecked()
         self.cfg.save()

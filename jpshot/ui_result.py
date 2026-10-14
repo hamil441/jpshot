@@ -288,6 +288,8 @@ class ResultWindow(QWidget):
         self._lookup_ctx = None
         self._placed = False
         self._sel_req = 0
+        self._diff_req = 0
+        self.difficulty = None
         self._sel_text = ""
         self._sel_view: WordView | None = None
         self._sel_timer = QTimer(self, singleShot=True, interval=450)
@@ -348,6 +350,7 @@ class ResultWindow(QWidget):
         self._update_image_visibility()
         dictionary.finished.connect(self._lookup_done)
         dictionary.kanji_finished.connect(self._kanji_done)
+        dictionary.difficulty_finished.connect(self._difficulty_done)
         speaker.state_changed.connect(self._speaker_state)
         QApplication.instance().installEventFilter(self)
 
@@ -398,6 +401,10 @@ class ResultWindow(QWidget):
         self.grammar_btn.setChecked(bool(self.cfg.grammar_mode))
         self.grammar_btn.toggled.connect(self._grammar_toggled)
         bar.addWidget(self.grammar_btn)
+        self.diff_label = QLabel()
+        self.diff_label.setTextFormat(Qt.TextFormat.RichText)
+        bar.addSpacing(8)
+        bar.addWidget(self.diff_label)
         bar.addStretch()
         self.mine_btn = QToolButton()
         self.mine_btn.setText("⛏ Mine")
@@ -652,6 +659,13 @@ class ResultWindow(QWidget):
             t, spans = japanese.render(self.ja_lines, mode)
             view.set_content(t, spans)
         self.play_btn.setEnabled(bool(text.strip()))
+        self._diff_req += 1
+        self.difficulty = None
+        if text.strip():
+            self.diff_label.setText("<span style='color:gray'>rating…</span>")
+            self.dictionary.estimate_difficulty(self._diff_req, self.ja_lines)
+        else:
+            self.diff_label.setText("")
 
     def _place_near(self, anchor: QRect):
         scr = (QGuiApplication.screenAt(anchor.center()) or QGuiApplication.primaryScreen()).availableGeometry()
@@ -680,7 +694,18 @@ class ResultWindow(QWidget):
         self.dictionary.lookup(self._lookup_req, tok.candidates())
         if any(kanji.is_kanji(c) for c in tok.surface + tok.base):
             self.dictionary.lookup_kanji(self._lookup_req, tok.surface if japanese.has_kanji(tok.surface)
-                                         else tok.base)
+                                         else tok.base, tok.candidates())
+
+    def _difficulty_done(self, req_id, d):
+        if req_id != self._diff_req:
+            return
+        self.difficulty = d
+        if d is None:
+            self.diff_label.setText("")
+            return
+        self.diff_label.setText(f"<span style='color:{d.color}'><b>{d.jlpt}</b> {d.stars}</span>")
+        self.diff_label.setToolTip(f"Estimated difficulty: {d.label} (≈JLPT {d.jlpt})\n• "
+                                   + "\n• ".join(d.reasons))
 
     def _render_popup(self):
         c = self._lookup_ctx
@@ -694,16 +719,18 @@ class ResultWindow(QWidget):
         self._lookup_ctx.update(entries=entries, error=error, loading=False)
         self._render_popup()
 
-    def _kanji_done(self, req_id, infos):
+    def _kanji_done(self, req_id, payload):
         if not self._lookup_ctx or req_id != self._lookup_ctx["id"]:
             return
+        infos = payload["infos"]
         for k in infos:
             if k.svg and not k.image_path:
                 try:
                     k.image_path = kanji.render_png(k)
                 except Exception:  # noqa: BLE001
                     log.exception("Could not draw kanji %s", k.char)
-        self._lookup_ctx["kanji"] = kanji.to_html(infos, theme.ACCENT)
+        self._lookup_ctx["kanji"] = kanji.to_html(infos, theme.ACCENT, payload.get("word", ""),
+                                                  payload.get("word_story", ""), payload.get("hint", False))
         self._render_popup()
 
     def _hide_popup(self):
@@ -769,6 +796,8 @@ class ResultWindow(QWidget):
             "selection_translation": self._sel_result if self._sel_text else "",
             "word": "", "word_furigana": "", "word_reading": "", "word_meaning": "", "word_pos": "",
             "sentence_cloze": "", "notes": "", "dictionary": self.dictionary,
+            "difficulty": self.difficulty.summary() if self.difficulty else "",
+            "difficulty_tag": f"difficulty::{self.difficulty.jlpt}" if self.difficulty else "",
             "pixmap": self.pixmap,
             "audio_text": flatten(self.ja_text, "ja"),
             "speed": self._speed_value(),

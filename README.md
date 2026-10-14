@@ -10,6 +10,7 @@ A Flameshot-style screenshot tool for learning Japanese. Press the hotkey, drag 
 - **⛏ Mine** — make an Anki card from the capture: screenshot (plus more screenshots, image files or a pasted image), every version of the text, the word you looked up and its meaning, and the Japanese audio.
 - **Screenshot panel** beside the text (🖼, Ctrl+I): scroll to zoom, drag to move, double-click to fit.
 - **Voice library**: Microsoft and Google voices, plus every VOICEVOX / AivisSpeech voice when those free apps are running.
+- **Difficulty rating** — each sentence gets an estimated level (≈JLPT N5–N1, ★–★★★★★) from its kanji, word frequency, grammar and length; hover it for the reasons. Saved on mined cards as a field and a `difficulty::N3`-style tag.
 - **Copy image**, **dark mode** (☾/☀ button) and a **⚙ Settings** window.
 
 If no text is detected, nothing happens.
@@ -82,7 +83,12 @@ The result window stays open while you take the next capture and simply updates;
 
 Grammar colors: blue = noun, red = verb, orange = adjective, purple = adverb, green = particle, pink = auxiliary (tense, politeness, negation…).
 
-**Kanji stories.** Add an Anthropic API key in ⚙ Settings (or set `ANTHROPIC_API_KEY`) and each kanji gets a short, vivid Remembering-the-Kanji-style story written for it, once, then saved. Without a key you get a description of how the parts are laid out (e.g. *Cliff (厂) draped over the top-left, grove (林) on top and day (日) at the bottom → calendar.*) plus where the character comes from.
+**Explanations.** The kanji part of the popup explains *why* each kanji's parts mean what they do, and for words with two or more kanji, *why those kanji together* make the word's meaning (e.g. 変 + 更 → 変更) — at most three sentences each, written once and saved. That needs a story writer, set in ⚙ Settings:
+
+- **Ollama (free, runs on your computer):** `sudo pacman -S ollama`, `sudo systemctl enable --now ollama`, `ollama pull qwen2.5:7b`. JPShot finds it automatically. Larger models (e.g. `gemma3:12b`) write better explanations if your machine can run them.
+- **Anthropic API:** paste an API key; the default model costs a fraction of a cent per explanation.
+
+Without one, you get each kanji's part layout (and its origin when that explains the meaning).
 
 The colored drawings use KanjiVG stroke data (CC BY-SA 3.0, downloaded per kanji). The first kanji breakdown downloads the KRADFILE component data (about 100 KB, EDRDG, CC BY-SA) into `~/.cache/jpshot/`; kanji meanings and RTK keywords come from kanjiapi.dev, and the "why" explanations from Wiktionary's glyph-origin notes; all are cached.
 
@@ -129,8 +135,10 @@ Use **⚙ Settings** in the window (or `jpshot settings`). Changes apply immedia
 | `theme` | `system` | `light`, `dark` or follow the system |
 | `sections` | `["japanese"]` | which boxes are shown |
 | `grammar_mode` | `false` | |
-| `anthropic_api_key` | `""` | optional, for kanji stories |
-| `story_model` | `claude-haiku-5-5` | model used for kanji stories |
+| `story_provider` | `auto` | `auto`, `ollama`, `anthropic` or `none` |
+| `ollama_model` | `qwen2.5:7b` | |
+| `anthropic_api_key` | `""` | optional |
+| `story_model` | `claude-haiku-5-5` | Anthropic model for explanations |
 | `japanese_font_size` / `english_font_size` | `20` / `13` | |
 
 ### Going offline (optional)
