@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#17181b">
+  <meta name="description" content="Read Japanese from screenshots, photos or text: furigana, translation, dictionary, pitch accent, audio and Anki cards.">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="JPShot">
+  <title>JPShot</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="css/app.css">
+  <script src="vendor/kuromoji/kuromoji.js" defer></script>
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="brand"><div class="logo">訳</div>JPShot</div>
+    <button class="icon-btn" id="btn-new" title="New capture" hidden>＋</button>
+    <button class="icon-btn" id="btn-history" title="History" hidden>📜</button>
+    <button class="icon-btn" id="btn-settings" title="Settings">⚙</button>
+  </header>
+
+  <main id="home">
+    <div class="capture-grid">
+      <button class="capture" id="cap-camera"><span class="ico">📷</span>Camera<span class="sub">book, sign, menu</span></button>
+      <button class="capture" id="cap-photo"><span class="ico">🖼</span>Screenshot<span class="sub">or any photo</span></button>
+      <button class="capture" id="cap-paste"><span class="ico">📋</span>Paste<span class="sub">text or image</span></button>
+      <button class="capture" id="cap-type"><span class="ico">⌨</span>Type<span class="sub">or edit text</span></button>
+    </div>
+    <div id="typearea" hidden>
+      <textarea class="typebox" id="typebox" placeholder="Japanese or English text…"></textarea>
+      <div class="row" style="margin-top:8px"><button class="btn primary" id="type-go">Read it</button>
+        <button class="btn" id="type-cancel">Cancel</button></div>
+    </div>
+    <div class="hint" id="share-hint"></div>
+    <div id="loadstatus" class="hint"></div>
+    <div id="recent"></div>
+  </main>
+
+  <section id="crop" class="page" hidden>
+    <div class="crop-tip">Drag a box around the text · drag the handles to adjust</div>
+    <div class="crop-stage" id="crop-stage"><img id="crop-img" alt=""><div class="crop-box" id="crop-box" hidden>
+      <div class="h" data-h="tl" style="left:0;top:0"></div><div class="h" data-h="tr" style="left:100%;top:0"></div>
+      <div class="h" data-h="bl" style="left:0;top:100%"></div><div class="h" data-h="br" style="left:100%;top:100%"></div>
+    </div></div>
+    <div class="crop-bar">
+      <button class="btn" id="crop-cancel">Cancel</button>
+      <button class="btn" id="crop-all">Whole image</button>
+      <button class="btn primary" id="crop-use" disabled>Read selection</button>
+    </div>
+  </section>
+
+  <section id="result" class="page" hidden>
+    <div class="chips" id="box-chips"></div>
+    <div class="chips" id="mode-chips"></div>
+    <div class="badges" id="badges"></div>
+    <div class="legend" id="legend" hidden></div>
+    <div class="patterns" id="patterns" hidden></div>
+    <div class="thumb" id="thumb" hidden><img id="thumb-img" alt="screenshot"></div>
+    <div id="boxes"></div>
+    <div class="hint" id="status"></div>
+  </section>
+
+  <div class="selbar" id="selbar" hidden></div>
+
+  <div class="dock" id="dock" hidden><div class="inner">
+    <div class="play">
+      <button class="btn primary" id="btn-play">▶ Read</button>
+      <span>🐢</span><input type="range" id="speed" min="0.5" max="2" step="0.05" value="1"><span>🐇</span>
+      <span id="speed-label" class="small">1.00×</span>
+    </div>
+    <div class="actions" id="actions"></div>
+  </div></div>
+
+  <input type="file" id="file-camera" accept="image/*" capture="environment" hidden>
+  <input type="file" id="file-photo" accept="image/*" hidden>
+  <div id="toast" class="toast" hidden></div>
+</body>
+</html>

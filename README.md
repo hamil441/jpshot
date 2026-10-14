@@ -147,6 +147,31 @@ The free Microsoft service has two Japanese voices (Nanami and Keita), plus Goog
 
 Furigana is written in Anki's format (`食[た]べる`), so it shows above the kanji on cards that use `{{furigana:Field}}`. If you Shift-hover a word before mining, that word, its reading and its meaning are filled in too.
 
+## Phone version (Android & iPhone)
+
+JPShot also runs as a web app on your phone: **https://hamil441.github.io/jpshot/**
+
+It has the same reading tools: OCR, furigana, hiragana, rōmaji, translation, read-aloud with a speed slider, and a dictionary on tap. The extras are the same too (grammar colors, patterns, pitch accent, difficulty, known words, kanji breakdown with stroke order, conjugations, Anki, Ask, shadowing, history). Turn them on in ⚙ → *Selectable features*. The OCR runs on the phone, and the dictionary works offline after the first load.
+
+**Install it**
+- **Android (Chrome):** open the link → ⋮ → *Install app*. Then take a screenshot of anything → *Share* → **JPShot**. It opens with a crop box.
+- **iPhone (Safari):** open the link → Share → *Add to Home Screen*. Take a screenshot, open JPShot and tap **Screenshot**. Your newest screenshot is first in the picker.
+
+**Ways to capture:** Camera, Screenshot/photo, Paste (text or an image) and Type. Draw a box around the text and tap *Read selection*. *Whole image* reads everything. If no text is found, nothing happens.
+
+**Using it:** tap a word for the dictionary, pitch, grammar and kanji. Select text to translate just that part. Tap a box chip to show one box; long-press it to show several. *✎ Edit* on the English box re-translates it into Japanese.
+
+**Anki on the phone**
+- **Android:** install *AnkiConnect Android* (Play Store / GitHub) next to AnkiDroid and open it. In its settings, add `https://hamil441.github.io` to the CORS hosts. JPShot then adds full cards with the image and audio.
+- **iPhone:** use *Send to AnkiMobile*. It sends text fields only. AnkiMobile needs a note type called **JPShot Sentence**; the easy way to get one is to make a card once from desktop JPShot and sync.
+- Desktop Anki with AnkiConnect also works when the phone app is open on the same computer.
+
+**Explanations / Ask:** paste an Anthropic API key in ⚙ → Explanations. It is stored only in that browser. Ollama is desktop-only.
+
+**Not possible in a web app:** a floating capture button over other apps. Android's share sheet is the closest thing.
+
+**Hosting it yourself:** the GitHub Action `.github/workflows/pages.yml` builds the offline data (JMdict, KANJIDIC2, Kanjium pitch accents, kuromoji) and publishes `web/` to GitHub Pages. In the repo settings set *Pages → Source* to **GitHub Actions**. To run it locally, run `python tools/build_web_data.py SRC web` after downloading the sources the workflow lists, copy kuromoji into `web/vendor/kuromoji/`, then serve `web/` with `python -m http.server`.
+
 ## Configuration
 
 Use **⚙ Settings** in the window (or `jpshot settings`). Changes apply immediately, including the hotkey. Settings are stored in `config.json` (on Linux `~/.config/jpshot/`, Windows `%APPDATA%\jpshot\`, macOS `~/Library/Application Support/jpshot/`), which you can also edit by hand:

@@ -1,0 +1,74 @@
+name: Deploy the phone app
+
+on:
+  push:
+    branches: [main]
+    paths: ["web/**", "tools/build_web_data.py", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache downloaded sources
+        uses: actions/cache@v4
+        with:
+          path: .data-cache
+          key: webdata-v1-${{ hashFiles('tools/build_web_data.py') }}
+
+      - name: Download dictionary, kanji, pitch and tokenizer data
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .data-cache && cd .data-cache
+          if [ ! -f jmdict.json ]; then
+            gh release download --repo scriptin/jmdict-simplified --pattern 'jmdict-eng-common-[0-9]*.json.zip' --clobber
+            unzip -o jmdict-eng-common-*.json.zip && mv jmdict-eng-common-*.json jmdict.json
+          fi
+          if [ ! -f kanjidic.json ]; then
+            gh release download --repo scriptin/jmdict-simplified --pattern 'kanjidic2-en-[0-9]*.json.zip' --clobber
+            unzip -o kanjidic2-en-*.json.zip && mv kanjidic2-en-*.json kanjidic.json
+          fi
+          [ -f accents.txt ] || curl -fsSL -o accents.txt \
+            https://raw.githubusercontent.com/mifunetoshiro/kanjium/master/data/source_files/raw/accents.txt \
+            || echo "pitch accent data unavailable; continuing without it"
+          if [ ! -d kuromoji ]; then
+            npm pack kuromoji@0.1.2
+            mkdir kuromoji && tar -xzf kuromoji-0.1.2.tgz -C kuromoji --strip-components=1
+          fi
+          ls -la
+
+      - name: Build compact data
+        run: python3 tools/build_web_data.py .data-cache web
+
+      - name: Vendor the Japanese tokenizer
+        run: |
+          mkdir -p web/vendor/kuromoji
+          cp .data-cache/kuromoji/build/kuromoji.js web/vendor/kuromoji/
+          cp -r .data-cache/kuromoji/dict web/vendor/kuromoji/
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
