@@ -50,15 +50,50 @@ def _blend(values: list[float]) -> float:
 
 
 def _kanji_hardness(info: dict | None) -> float:
+    """1 (very basic) … 5 (rare). School grade and newspaper frequency are the reliable signals;
+    the kanji 'jlpt' field from KANJIDIC/kanjiapi is the OLD 4-level test (4 = easiest)."""
     if not info:
-        return 5.0
-    jlpt, grade = info.get("jlpt"), info.get("grade")
-    if jlpt:
-        return max(1.0, min(5.0, 6 - int(jlpt)))
+        return 3.5   # unknown (lookup failed): don't pretend it's rare
+    scores = []
+    grade = info.get("grade")
     if grade:
         g = int(grade)
-        return 1 + 0.5 * g if g <= 6 else (4.5 if g == 8 else 5.0)
-    return 5.0
+        scores.append({1: 1.0, 2: 1.0, 3: 1.5, 4: 2.0, 5: 2.5, 6: 2.5}.get(g, 3.5 if g == 8 else 5.0))
+    freq = info.get("freq_mainichi_shinbun") or info.get("freq")
+    if freq:
+        f = int(freq)
+        scores.append(1.0 if f <= 300 else 1.5 if f <= 600 else 2.0 if f <= 1000 else 2.5 if f <= 1500
+                      else 3.0 if f <= 2000 else 4.0)
+    if not scores and info.get("jlpt"):
+        scores.append({4: 1.0, 3: 2.0, 2: 3.0, 1: 4.5}.get(int(info["jlpt"]), 3.5))
+    return min(scores) if scores else 5.0
+
+
+def entry_hardness(e) -> float:
+    """1 (very basic) … 5 (rare) for one dictionary entry."""
+    if getattr(e, "jlpt", None):
+        return float(6 - e.jlpt)
+    rank = getattr(e, "rank", None)
+    if rank:
+        return 1.0 if rank <= 4 else 1.5 if rank <= 8 else 2.0 if rank <= 16 else 2.5 if rank <= 30 else 3.0
+    if getattr(e, "common", None):
+        return 2.2   # marked common (ichi1/news1/spec): everyday vocabulary
+    return 4.5
+
+
+def word_hardness(word: str, entries) -> tuple[float, bool]:
+    """(hardness, found). Uses the EASIEST entry that is really this word (spelling or reading matches),
+    so a rare homonym (個々 for ここ) can't make an everyday word look hard."""
+    matching = [e for e in entries if word in (getattr(e, "forms", None) or [e.word, e.reading])]
+    if not matching:
+        matching = [e for e in entries if e.word == word or e.reading == word]
+    if matching:
+        return min(entry_hardness(e) for e in matching), True
+    return (3.0 if not any(is_kanji(c) for c in word) else 4.0), False
+
+
+def _level(h: float) -> int:
+    return max(1, min(5, int(h + 0.5)))
 
 
 def estimate(lines: list[list[Token]], kanji_info, word_entries, max_words: int = 30) -> Difficulty | None:
@@ -87,24 +122,17 @@ def estimate(lines: list[list[Token]], kanji_info, word_entries, max_words: int 
     word_scores, rare, word_h = [], [], {}
     for w in words:
         try:
-            entries = word_entries(w)
+            entries = word_entries(w) or []
         except Exception:  # noqa: BLE001
             entries = []
-        e = entries[0] if entries else None
-        if e is None:
-            h = 4.0
-        elif getattr(e, "jlpt", None):
-            h = float(6 - e.jlpt)
-        elif getattr(e, "common", None):
-            h = 2.5
-        else:
-            h = 4.5
-        # a word is at least as hard as its hardest kanji, minus a little if it's a common word
+        h, found = word_hardness(w, entries)
+        # a word is pulled up by a hard kanji, but frequent words much less (everyone knows 友達)
         kh = [kanji_scores.get(c) or _kanji_hardness(kanji_info(c)) for c in w if is_kanji(c) and c not in "々〆"]
         if kh:
-            h = max(h, max(kh) - (0.5 if getattr(e, "common", None) else 0))
+            h = max(h, max(kh) - (1.0 if found and h <= 2.5 else 0.0))
         word_h[w] = h
         word_scores.append(h)
+        log.debug("word %s -> %.1f (%s)", w, h, "dictionary" if found else "not found")
         if h >= 4.5:
             rare.append(w)
     v_score = _blend(word_scores)
@@ -132,7 +160,7 @@ def estimate(lines: list[list[Token]], kanji_info, word_entries, max_words: int 
     reasons.append(f"{n} characters long")
 
     score = 0.4 * v_score + 0.35 * k_score + 0.15 * g_score + 0.10 * l_score
-    level = max(1, min(5, round(score)))
+    level = _level(score)
     d = Difficulty(level=level, jlpt=f"N{6 - level}", label=LABELS[level], score=round(score, 2), reasons=reasons,
                    word_hardness=word_h, kanji_hardness=kanji_scores)
     log.info("Difficulty %s (%.2f): vocab %.1f, kanji %.1f, grammar %.1f, length %.1f — %s",
@@ -156,7 +184,7 @@ def word_color(d: "Difficulty | None", tok: Token) -> str | None:
     if h is None:
         kh = [d.kanji_hardness.get(c, 5.0) for c in tok.surface if is_kanji(c)]
         h = max(kh) if kh else 1.0
-    return GRADIENT[max(0, min(4, round(h) - 1))]
+    return GRADIENT[_level(h) - 1]
 
 
 def word_level(d: "Difficulty | None", tok: Token) -> str:
@@ -165,8 +193,7 @@ def word_level(d: "Difficulty | None", tok: Token) -> str:
     h = d.word_hardness.get(tok.base)
     if h is None:
         return ""
-    lvl = max(1, min(5, round(h)))
-    return f"N{6 - lvl}"
+    return f"N{6 - _level(h)}"
 
 
 def legend_html() -> str:

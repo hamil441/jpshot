@@ -25,6 +25,8 @@ class Entry:
     senses: list[Sense]
     common: bool | None = None   # marked as a common word
     jlpt: int | None = None      # 5 (N5, easiest) … 1 (N1)
+    rank: int | None = None      # JMdict frequency band nf01…nf48 (nf01 = the 500 most frequent words)
+    forms: list[str] = field(default_factory=list)   # every spelling and reading of the entry
 
 
 class Dictionary(QObject):
@@ -184,7 +186,7 @@ class Dictionary(QObject):
 
         def job():
             try:
-                d = estimate(lines, self.kanji._api, entries_for)
+                d = estimate(lines, lambda ch: self.kanji._api(ch) or self.kanji._jamdict_info(ch), entries_for)
             except Exception:  # noqa: BLE001
                 log.exception("Difficulty estimate failed")
                 d = None
@@ -285,10 +287,11 @@ class Dictionary(QObject):
             kanji = [k.text for k in ent.kanji_forms]
             kana = [k.text for k in ent.kana_forms]
             senses = [Sense([g.text for g in s.gloss], list(s.pos)) for s in ent.senses[:5]]
-            pri = {p for f in list(ent.kanji_forms) + list(ent.kana_forms) for p in (getattr(f, "pri", None) or [])}
+            pri = {str(p) for f in list(ent.kanji_forms) + list(ent.kana_forms) for p in (getattr(f, "pri", None) or [])}
             common = bool(pri & {"news1", "ichi1", "spec1", "spec2", "gai1"})
+            ranks = [int(p[2:]) for p in pri if p.startswith("nf") and p[2:].isdigit()]
             out.append(Entry(word=(kanji or kana or [q])[0], reading=(kana or [""])[0], senses=senses,
-                             common=common))
+                             common=common, rank=min(ranks) if ranks else None, forms=kanji + kana))
         return out
 
     def _jisho(self, q: str) -> list[Entry]:
@@ -310,5 +313,6 @@ class Dictionary(QObject):
             levels = [int(x[-1]) for x in d.get("jlpt", []) if x[-1:].isdigit()]
             out.append(Entry(word=j.get("word") or j.get("reading", q),
                              reading=j.get("reading", ""), senses=senses,
-                             common=bool(d.get("is_common")), jlpt=max(levels) if levels else None))
+                             common=bool(d.get("is_common")), jlpt=max(levels) if levels else None,
+                             forms=[x for jj in d.get("japanese", []) for x in (jj.get("word"), jj.get("reading")) if x]))
         return out

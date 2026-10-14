@@ -639,7 +639,8 @@ class KanjiDB:
                 on += [r.value for r in g.readings if r.r_type == "ja_on"]
                 kun += [r.value for r in g.readings if r.r_type == "ja_kun"]
             return {"meanings": meanings, "on_readings": on, "kun_readings": kun,
-                    "stroke_count": c.stroke_count, "grade": c.grade, "jlpt": c.jlpt}
+                    "stroke_count": c.stroke_count, "grade": c.grade, "jlpt": c.jlpt,
+                    "freq": getattr(c, "freq", None)}
         except Exception:  # noqa: BLE001
             return None
 
