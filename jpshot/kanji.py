@@ -110,6 +110,7 @@ class KanjiInfo:
     image_path: str = ""         # rendered PNG (made on the UI thread)
     story: str = ""              # ≤3-sentence mnemonic
     story_is_ai: bool = False
+    family: list = field(default_factory=list)   # [(word, reading, meaning)] common words with this kanji
 
 
 def is_kanji(c: str) -> bool:
@@ -240,6 +241,11 @@ class KanjiDB:
             self._stories: dict[str, str] = json.loads(self._story_path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             self._stories = {}
+        self._family_path = cache_dir() / "families.json"
+        try:
+            self._families: dict[str, list] = json.loads(self._family_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            self._families = {}
         self.provider = "auto"        # auto | anthropic | ollama | none
         self.api_key = ""
         self.story_model = "claude-haiku-5-5"
@@ -480,6 +486,34 @@ class KanjiDB:
         )
         return self._cached_llm(f"word|{word}", prompt, word)
 
+    # -- words sharing a kanji ---------------------------------------------------
+    def family(self, ch: str, exclude: str = "") -> list:
+        if ch not in self._families:
+            words = []
+            try:
+                r = self._session_factory().get("https://jisho.org/api/v1/search/words",
+                                                params={"keyword": f"*{ch}*"}, timeout=8)
+                r.raise_for_status()
+                for d in r.json().get("data", []):
+                    j = (d.get("japanese") or [{}])[0]
+                    w = j.get("word", "")
+                    if not d.get("is_common") or ch not in w or len(w) > 4:
+                        continue
+                    gloss = ", ".join((d.get("senses") or [{}])[0].get("english_definitions", [])[:2])
+                    words.append((w, j.get("reading", ""), gloss))
+                    if len(words) >= 6:
+                        break
+            except Exception as e:  # noqa: BLE001
+                log.info("Words with %s unavailable: %s", ch, e)
+                return []
+            self._families[ch] = words
+            try:
+                with self._save_lock:
+                    self._family_path.write_text(json.dumps(self._families, ensure_ascii=False), encoding="utf-8")
+            except Exception:  # noqa: BLE001
+                pass
+        return [w for w in self._families[ch] if w[0] != exclude][:4]
+
     # -- components -------------------------------------------------------
     def _load_krad(self) -> dict[str, list[str]]:
         if self._krad is not None:
@@ -618,12 +652,15 @@ class KanjiDB:
         log.debug("Kanji %s: keyword=%r meanings=%s parts=%s", ch, k.keyword, k.meanings, k.parts)
         return k
 
-    def breakdown(self, word: str) -> list[KanjiInfo]:
+    def breakdown(self, word: str, with_family: bool = True) -> list[KanjiInfo]:
         seen, out = set(), []
         for c in word:
             if is_kanji(c) and c not in "々〆" and c not in seen:
                 seen.add(c)
-                out.append(self.info(c))
+                k = self.info(c)
+                if with_family:
+                    k.family = self.family(c, exclude=word)
+                out.append(k)
         return out
 
 
@@ -689,6 +726,10 @@ def to_html(infos: list[KanjiInfo], accent: str, word: str = "", word_story: str
             info += f"<br><span style='color:gray'>{html.escape('  ·  '.join(rd))}</span>"
         h += (f"<table cellspacing='0' cellpadding='2' style='margin-top:4px'><tr>"
               f"<td valign='top'>{pic}</td><td valign='top'>{info}</td></tr></table>")
+        if k.family:
+            fam = " · ".join(f"{html.escape(w)} <span style='color:gray'>({html.escape(r)})</span> "
+                             f"{html.escape(g)}" for w, r, g in k.family)
+            h += f"<div style='margin:0 0 2px 4px;font-size:10pt'><b>Words with {html.escape(k.char)}:</b> {fam}</div>"
         if k.story:
             label = "Why" if k.story_is_ai else "Layout"
             h += f"<div style='margin:0 0 4px 4px'><b>{label}:</b> {html.escape(k.story)}</div>"

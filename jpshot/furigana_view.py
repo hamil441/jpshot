@@ -240,6 +240,22 @@ class _Canvas(QWidget):
         self._anchor = None
         super().mouseReleaseEvent(e)
 
+    def contextMenuEvent(self, e):
+        from PySide6.QtWidgets import QMenu
+
+        i = self.index_at(e.pos())
+        if i is None:
+            return
+        tok = self.items[i].tok
+        menu = QMenu(self)
+        a1 = menu.addAction(f"▶ Play from “{tok.surface}”")
+        a2 = menu.addAction("▶ Play this phrase")
+        chosen = menu.exec(e.globalPos())
+        if chosen is a1:
+            self.view.play_requested.emit(tok, "from")
+        elif chosen is a2:
+            self.view.play_requested.emit(tok, "phrase")
+
     def mouseDoubleClickEvent(self, e):
         i = self.index_at(e.position().toPoint())
         if i is not None:
@@ -268,6 +284,7 @@ class FuriganaView(QScrollArea):
 
     lookup_requested = Signal(object, QRect)
     selectionChanged = Signal()
+    play_requested = Signal(object, str)
 
     def __init__(self, font: QFont):
         super().__init__()

@@ -36,6 +36,8 @@ class Dictionary(QObject):
     difficulty_finished = Signal(int, object)
     # request id, English word, list[Entry] (Japanese words meaning it), error message
     english_finished = Signal(int, str, object, str)
+    # request id, [(japanese, english)]
+    examples_finished = Signal(int, object)
 
     def __init__(self, backend: str = "auto"):
         super().__init__()
@@ -45,6 +47,8 @@ class Dictionary(QObject):
         self._kanji_exec = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kanji")   # breakdowns
         self._story_exec = ThreadPoolExecutor(max_workers=1, thread_name_prefix="story")   # AI writing
         self._bg_exec = ThreadPoolExecutor(max_workers=1, thread_name_prefix="difficulty")
+        self._ex_exec = ThreadPoolExecutor(max_workers=1, thread_name_prefix="examples")
+        self._examples: dict[str, list] = {}
         self._cache: dict[str, list[Entry]] = {}
         self._local = threading.local()     # per-thread HTTP session and jamdict connection
         self._jam_failed = backend == "jisho"
@@ -139,6 +143,35 @@ class Dictionary(QObject):
         levels = [int(x[-1]) for x in d.get("jlpt", []) if x[-1:].isdigit()]
         return Entry(word=j.get("word") or j.get("reading", q), reading=j.get("reading", ""), senses=senses,
                      common=bool(d.get("is_common")), jlpt=max(levels) if levels else None)
+
+    def examples(self, req_id: int, word: str) -> None:
+        """A few example sentences containing the word (Tatoeba, with English translations)."""
+        def job():
+            if word in self._examples:
+                self.examples_finished.emit(req_id, self._examples[word])
+                return
+            out = []
+            try:
+                r = self._http().get("https://tatoeba.org/eng/api_v0/search",
+                                     params={"from": "jpn", "to": "eng", "query": f'="{word}"',
+                                             "orphans": "no", "unapproved": "no", "sort": "relevance"},
+                                     timeout=10)
+                r.raise_for_status()
+                for res in r.json().get("results", []):
+                    jp = res.get("text", "")
+                    en = next((t.get("text") for group in res.get("translations", []) for t in group
+                               if t.get("lang") == "eng"), None)
+                    if jp and en and len(jp) <= 60:
+                        out.append((jp, en))
+                    if len(out) >= 3:
+                        break
+                log.debug("Tatoeba %s -> %d examples", word, len(out))
+            except Exception as e:  # noqa: BLE001
+                log.info("Example sentences for %s unavailable: %s", word, e)
+            self._examples[word] = out
+            self.examples_finished.emit(req_id, out)
+
+        self._ex_exec.submit(job)
 
     def estimate_difficulty(self, req_id: int, lines) -> None:
         from .difficulty import estimate

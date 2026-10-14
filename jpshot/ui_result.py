@@ -83,6 +83,7 @@ class WordView(QTextEdit):
     """Read-only text. If it has word spans, holding Shift while hovering looks words up."""
 
     lookup_requested = Signal(object, QRect)  # Token, global rect of the word
+    play_requested = Signal(object, str)      # Token, "from" | "phrase"
 
     def __init__(self, font: QFont):
         super().__init__()
@@ -227,6 +228,26 @@ class WordView(QTextEdit):
         log.debug("Hover %r (base %r, reading %r)", span.token.surface, span.token.base, span.token.reading)
         self.lookup_requested.emit(span.token, glob)
 
+    def contextMenuEvent(self, e):
+        span = self.span_at(self.viewport().mapFromGlobal(e.globalPos()))
+        if span is None or span.token.pos == "english":
+            return super().contextMenuEvent(e)
+        from PySide6.QtGui import QAction
+
+        menu = self.createStandardContextMenu()
+        first = menu.actions()[0] if menu.actions() else None
+        a1 = QAction(f"▶ Play from “{span.token.surface}”", menu)
+        a2 = QAction("▶ Play this phrase", menu)
+        menu.insertAction(first, a1)
+        menu.insertAction(first, a2)
+        if first is not None:
+            menu.insertSeparator(first)
+        chosen = menu.exec(e.globalPos())
+        if chosen is a1:
+            self.play_requested.emit(span.token, "from")
+        elif chosen is a2:
+            self.play_requested.emit(span.token, "phrase")
+
     def mouseMoveEvent(self, e):
         super().mouseMoveEvent(e)
         if (e.modifiers() & lookupkey.modifier()) \
@@ -301,7 +322,7 @@ class DictionaryPopup(QFrame):
         return h
 
     def show_info(self, tok, rect: QRect, gram_html: str, entries, error: str, kanji_html: str,
-                  loading: bool, extra_html: str = ""):
+                  loading: bool, extra_html: str = "", after_html: str = ""):
         body = self._head(tok) + extra_html + gram_html
         if loading:
             body += "<br><i style='color:gray'>Looking up…</i>"
@@ -318,6 +339,7 @@ class DictionaryPopup(QFrame):
                        if s.pos else "")
                 body += f"<li>{html.escape('; '.join(s.glosses))}{pos}</li>"
             body += "</ol>"
+        body += after_html
         body += kanji_html
         self.label.setText(body)
         self._place(rect)
@@ -383,6 +405,7 @@ class ResultWindow(QWidget):
         for key in ALL_SECTIONS:
             sec = Section(key, self._font_for(key))
             sec.view.lookup_requested.connect(self._lookup)
+            sec.view.play_requested.connect(self._play_part)
             sec.view.viewport().installEventFilter(self)
             sec.view.selectionChanged.connect(lambda v=sec.view: self._selection_changed(v))
             self.sections[key] = sec
@@ -453,6 +476,7 @@ class ResultWindow(QWidget):
         dictionary.kanji_finished.connect(self._kanji_done)
         dictionary.difficulty_finished.connect(self._difficulty_done)
         dictionary.english_finished.connect(self._english_done)
+        dictionary.examples_finished.connect(self._examples_done)
         speaker.state_changed.connect(self._speaker_state)
         QApplication.instance().installEventFilter(self)
 
@@ -955,7 +979,10 @@ class ResultWindow(QWidget):
             gram = grammar.to_html(grammar.describe([[jt]], jt))
         except Exception:  # noqa: BLE001
             gram = ""
-        c.update(tok=jt, gram=gram, extra=extra, entries=entries[:1], error="", loading=False)
+        from . import conjugate
+        c.update(tok=jt, gram=gram, extra=extra, entries=entries[:1], error="", loading=False,
+                 forms=conjugate.table_html(conjugate.conjugations(jt.base, jt.ctype, jt.pos)))
+        self.dictionary.examples(req_id, e.word)
         self._render_popup()
         if any(kanji.is_kanji(ch) for ch in jt.surface):
             self.dictionary.lookup_kanji(req_id, jt.surface, [e.word])
@@ -974,7 +1001,11 @@ class ResultWindow(QWidget):
         lvl = difficulty.word_level(self.difficulty, tok)
         if lvl:
             extra += f"<div style='color:gray;font-size:9pt'>word difficulty ≈{lvl}</div>"
+        from . import conjugate
+        forms = conjugate.table_html(conjugate.conjugations(tok.base, tok.ctype, tok.pos))
+        self.dictionary.examples(self._lookup_req, tok.base or tok.surface)
         self._lookup_ctx = {"id": self._lookup_req, "tok": tok, "rect": rect, "gram": gram, "extra": extra,
+                            "forms": forms,
                             "entries": None, "error": "", "kanji": "", "loading": True}
         self._render_popup()
         self.dictionary.lookup(self._lookup_req, tok.candidates())
@@ -1055,11 +1086,20 @@ class ResultWindow(QWidget):
         self.diff_label.setToolTip(f"Estimated difficulty: {d.label} (≈JLPT {d.jlpt})\n• "
                                    + "\n• ".join(d.reasons) + personal)
 
+    def _examples_done(self, req_id, examples):
+        c = self._lookup_ctx
+        if not c or req_id != c["id"] or not examples:
+            return
+        rows = "".join(f"<div style='margin-left:6px'>{html.escape(jp)}<br>"
+                       f"<span style='color:gray;font-size:9pt'>{html.escape(en)}</span></div>" for jp, en in examples)
+        c["examples"] = f"<div style='margin-top:6px'><b>Examples</b></div>{rows}"
+        self._render_popup()
+
     def _render_popup(self):
         c = self._lookup_ctx
         if c and self.isVisible():
             self.popup.show_info(c["tok"], c["rect"], c["gram"], c["entries"], c["error"], c["kanji"],
-                                 c["loading"], c.get("extra", ""))
+                                 c["loading"], c.get("extra", ""), c.get("forms", "") + c.get("examples", ""))
 
     def _lookup_done(self, req_id, query, entries, error):
         if not self._lookup_ctx or req_id != self._lookup_ctx["id"]:
@@ -1367,6 +1407,24 @@ class ResultWindow(QWidget):
         word = c["tok"].surface
         log.info("Read word: %s", word)
         self.speaker.play(word, self._speed_value())
+
+    def _play_part(self, tok, how: str):
+        """Right-click playback: the sentence from a word on, or just the word's phrase."""
+        flat = [x for ln in self.ja_lines for x in ln]
+        for line in self.ja_lines:
+            for i, t in enumerate(line):
+                if t is tok:
+                    if how == "from":
+                        k = next(n for n, x in enumerate(flat) if x is tok)
+                        text = "".join(x.surface for x in flat[k:])
+                    else:   # the word plus the particles/endings attached to it
+                        j = i + 1
+                        while j < len(line) and line[j].pos in ("助詞", "助動詞", "接尾辞"):
+                            j += 1
+                        text = "".join(x.surface for x in line[i:j])
+                    log.info("Play %s: %s", how, short(text))
+                    self.speaker.play(text, self._speed_value())
+                    return
 
     def _play_selection(self):
         text = self._sel_result if (self._sel_view is self.sections["english"].view) else self._sel_text
