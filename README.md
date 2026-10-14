@@ -5,7 +5,8 @@ A Flameshot-style screenshot tool for learning Japanese. Press the hotkey, drag 
 - **English**, **日本語** (original), **Furigana** (readings drawn above the kanji), **ひらがな** and **Rōmaji** — click one in the row at the top to show just that box, or Ctrl+click to show several at once. Everything is selectable and copyable.
 - **Select to translate** — highlight part of any row and just that part is translated in a bar at the top.
 - **Dictionary popup** — hold **Shift** and hover a Japanese word: reading, rōmaji, dictionary form, meanings, its grammatical role, and a **kanji breakdown** in the spirit of *Remembering the Kanji*: the kanji drawn with each part in its own color, the RTK keyword, the parts and their meanings in matching colors, readings, and a short (≤3 sentence) explanation of how the parts make the meaning.
-- **Grammar mode** — colors every word by part of speech; hold Shift over a word to see particles, auxiliaries, conjugation type and form, and what a whole verb phrase means (e.g. 勉強しています → present · ongoing · polite).
+- **Word coloring** (one at a time): **Grammar** colors words by part of speech; **Pitch** by pitch accent (blue heiban, red atamadaka, orange nakadaka, green odaka); **Difficulty** from easy (green) to hard (red). Hold Shift over a word for its explanation, including its pitch drawn over the reading (high sounds overlined, ꜜ where it drops).
+- **Word audio** — 🔊 in the word popup (or press W) plays just that word; 🔊 in the selection bar plays what you highlighted.
 - **Read in Japanese** — neural text-to-speech with a **speed slider** (0.5× – 2×) always visible at the bottom.
 - **⛏ Mine** — make an Anki card from the capture: screenshot (plus more screenshots, image files or a pasted image), every version of the text, the word you looked up and its meaning, and the Japanese audio.
 - **Screenshot panel** beside the text (🖼, Ctrl+I): scroll to zoom, drag to move, double-click to fit.
@@ -70,7 +71,8 @@ Default hotkey: **Ctrl+Alt+J**. Left-clicking the tray icon also starts a captur
 | Result | Ctrl+click a box name | show several boxes at once |
 | Result | select text in any row | translate just that part |
 | Result | Shift + hover a Japanese word (key changeable in Settings) | dictionary, grammar and kanji popup |
-| Result | Grammar toggle, or Alt+G | color words by part of speech |
+| Result | Grammar / Pitch / Difficulty (Alt+G / Alt+P / Alt+D) | color words by that scheme; click again to turn off |
+| Result | W, or 🔊 in the popup | hear the word under the popup |
 | Result | 🖼 or Ctrl+I | show/hide the screenshot panel (scroll = zoom, drag = move, double-click = fit) |
 | Result | Esc | close popup, then the window |
 | Result | Space | play / stop audio |
@@ -80,6 +82,8 @@ Default hotkey: **Ctrl+Alt+J**. Left-clicking the tray icon also starts a captur
 | Result | ⚙ or Ctrl+, | settings |
 
 The result window stays open while you take the next capture and simply updates; move it wherever you like and it stays there. Changing the speed while audio is playing restarts it at the new speed from about the same spot. Your choices are remembered.
+
+Pitch accent comes from UniDic's accent data (Tokyo standard). For verbs and adjectives it's shown for the dictionary form, since conjugation can move the drop; treat it as a guide.
 
 Grammar colors: blue = noun, red = verb, orange = adjective, purple = adverb, green = particle, pink = auxiliary (tense, politeness, negation…).
 
@@ -134,7 +138,7 @@ Use **⚙ Settings** in the window (or `jpshot settings`). Changes apply immedia
 | `dictionary` | `auto` | offline JMdict if installed, else jisho.org; or force `jamdict` / `jisho` |
 | `theme` | `system` | `light`, `dark` or follow the system |
 | `sections` | `["japanese"]` | which boxes are shown |
-| `grammar_mode` | `false` | |
+| `color_mode` | `none` | `none`, `grammar`, `pitch` or `difficulty` |
 | `story_provider` | `auto` | `auto`, `ollama`, `anthropic` or `none` |
 | `ollama_model` | `qwen2.5:7b` | |
 | `anthropic_api_key` | `""` | optional |

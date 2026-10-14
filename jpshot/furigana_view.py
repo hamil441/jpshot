@@ -55,6 +55,7 @@ class _Canvas(QWidget):
         self._dragged = False
         self.colored = False
         self.hover_lookup = False
+        self.color_fn = grammar.color_for
 
     # -- layout -----------------------------------------------------------
     def set_fonts(self, base: QFont):
@@ -134,7 +135,7 @@ class _Canvas(QWidget):
                 p.fillRect(QRect(it.x, it.y + ruby_h + 2, it.w, fb.height() + 2), hover_bg)
             col = QColor(text_col)
             if self.colored:
-                c = grammar.color_for(it.tok)
+                c = self.color_fn(it.tok)
                 if c:
                     col = QColor(c)
             ruby_col = QColor(col)
@@ -270,6 +271,17 @@ class FuriganaView(QScrollArea):
         c = self.canvas
         c.lines, c.message, c.hover, c.sel = lines, "", None, None
         c.relayout()
+
+    @property
+    def color_fn(self):
+        return self.canvas.color_fn
+
+    @color_fn.setter
+    def color_fn(self, fn):
+        self.canvas.color_fn = fn
+
+    def refresh_colors(self):
+        self.canvas.update()
 
     def set_colors(self, on: bool):
         self.canvas.colored = on

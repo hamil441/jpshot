@@ -52,7 +52,8 @@ class Config:
 
     # Look & layout
     theme: str = "system"            # system | light | dark
-    grammar_mode: bool = False       # color words by part of speech
+    grammar_mode: bool = False       # (old setting, replaced by color_mode)
+    color_mode: str = ""             # word coloring: none | grammar | pitch | difficulty
     show_image: bool = True          # screenshot panel beside the text
     lookup_key: str = "shift"        # hold this over a word for the popup: shift | ctrl | alt | meta
     japanese_font_size: int = 20
@@ -98,6 +99,8 @@ class Config:
                 print(f"[jpshot] could not read config: {e}", file=sys.stderr)
         else:
             cfg.save()
+        if not cfg.color_mode:
+            cfg.color_mode = "grammar" if cfg.grammar_mode else "none"
         if not cfg.voice:  # migrate from tts_engine/tts_voice
             cfg.voice = "gtts:ja" if cfg.tts_engine == "gtts" else f"edge:{cfg.tts_voice or 'ja-JP-NanamiNeural'}"
         return cfg

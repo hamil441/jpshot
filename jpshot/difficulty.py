@@ -28,6 +28,8 @@ class Difficulty:
     label: str
     score: float
     reasons: list[str] = field(default_factory=list)
+    word_hardness: dict = field(default_factory=dict)    # dictionary form -> 1.0 … 5.0
+    kanji_hardness: dict = field(default_factory=dict)   # kanji -> 1.0 … 5.0
 
     @property
     def color(self) -> str:
@@ -59,7 +61,7 @@ def _kanji_hardness(info: dict | None) -> float:
     return 5.0
 
 
-def estimate(lines: list[list[Token]], kanji_info, word_entries, max_words: int = 12) -> Difficulty | None:
+def estimate(lines: list[list[Token]], kanji_info, word_entries, max_words: int = 30) -> Difficulty | None:
     """kanji_info(ch) -> dict | None (kanjiapi-like); word_entries(word) -> list[Entry]."""
     tokens = [t for line in lines for t in line]
     text = "".join(t.surface for t in tokens)
@@ -82,7 +84,7 @@ def estimate(lines: list[list[Token]], kanji_info, word_entries, max_words: int 
 
     # vocabulary
     words = list(dict.fromkeys(t.base for t in tokens if t.lookupable and t.pos in CONTENT_POS))[:max_words]
-    word_scores, rare = [], []
+    word_scores, rare, word_h = [], [], {}
     for w in words:
         try:
             entries = word_entries(w)
@@ -97,6 +99,11 @@ def estimate(lines: list[list[Token]], kanji_info, word_entries, max_words: int 
             h = 2.5
         else:
             h = 4.5
+        # a word is at least as hard as its hardest kanji, minus a little if it's a common word
+        kh = [kanji_scores.get(c) or _kanji_hardness(kanji_info(c)) for c in w if is_kanji(c) and c not in "々〆"]
+        if kh:
+            h = max(h, max(kh) - (0.5 if getattr(e, "common", None) else 0))
+        word_h[w] = h
         word_scores.append(h)
         if h >= 4.5:
             rare.append(w)
@@ -126,7 +133,37 @@ def estimate(lines: list[list[Token]], kanji_info, word_entries, max_words: int 
 
     score = 0.4 * v_score + 0.35 * k_score + 0.15 * g_score + 0.10 * l_score
     level = max(1, min(5, round(score)))
-    d = Difficulty(level=level, jlpt=f"N{6 - level}", label=LABELS[level], score=round(score, 2), reasons=reasons)
+    d = Difficulty(level=level, jlpt=f"N{6 - level}", label=LABELS[level], score=round(score, 2), reasons=reasons,
+                   word_hardness=word_h, kanji_hardness=kanji_scores)
     log.info("Difficulty %s (%.2f): vocab %.1f, kanji %.1f, grammar %.1f, length %.1f — %s",
              d.jlpt, score, v_score, k_score, g_score, l_score, "; ".join(reasons))
     return d
+
+
+GRADIENT = ["#2fb383", "#7cc04b", "#e3c03a", "#e8743d", "#e8556d"]   # easy … hard
+
+
+def word_color(d: "Difficulty | None", tok: Token) -> str | None:
+    """Color for one word in difficulty-coloring mode (None = leave uncolored)."""
+    if d is None or not tok.lookupable or tok.pos not in CONTENT_POS:
+        return None
+    h = d.word_hardness.get(tok.base)
+    if h is None:
+        kh = [d.kanji_hardness.get(c, 5.0) for c in tok.surface if is_kanji(c)]
+        h = max(kh) if kh else 1.0
+    return GRADIENT[max(0, min(4, round(h) - 1))]
+
+
+def word_level(d: "Difficulty | None", tok: Token) -> str:
+    if d is None:
+        return ""
+    h = d.word_hardness.get(tok.base)
+    if h is None:
+        return ""
+    lvl = max(1, min(5, round(h)))
+    return f"N{6 - lvl}"
+
+
+def legend_html() -> str:
+    cells = "".join(f"<span style='color:{c}'>■</span>" for c in GRADIENT)
+    return f"word difficulty: easy {cells} hard  <span style='color:gray'>(≈N5 … N1)</span>"

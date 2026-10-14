@@ -17,7 +17,7 @@ from PySide6.QtGui import (QClipboard, QColor, QCursor, QFont, QGuiApplication, 
 from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QSlider,
                                QSplitter, QTextEdit, QToolButton, QVBoxLayout, QWidget)
 
-from . import grammar, japanese, kanji, lookupkey, theme, translate
+from . import difficulty, grammar, japanese, kanji, lookupkey, pitch, theme, translate
 from .furigana_view import FuriganaView
 from .image_view import ImageView
 from .config import ALL_SECTIONS
@@ -78,8 +78,9 @@ class WordView(QTextEdit):
         self.viewport().setMouseTracking(True)
         self.spans: list[japanese.Span] = []
         self._hover: japanese.Span | None = None
-        self.hover_lookup = False   # grammar mode on (colors); lookups still need the lookup key
+        self.hover_lookup = False   # a color scheme is on (re-applied when content changes)
         self._colored = False
+        self.color_fn = grammar.color_for
 
     def set_content(self, text: str, spans: list[japanese.Span] | None = None):
         self.spans = spans or []
@@ -101,7 +102,7 @@ class WordView(QTextEdit):
             cur.setCharFormat(QTextCharFormat())
         else:
             for span in self.spans:
-                col = grammar.color_for(span.token)
+                col = self.color_fn(span.token)
                 if not col:
                     continue
                 cur.setPosition(span.start)
@@ -111,6 +112,11 @@ class WordView(QTextEdit):
                 cur.mergeCharFormat(fmt)
         cur.endEditBlock()
         self._colored = on
+
+    def refresh_colors(self):
+        if self._colored:
+            self.set_colors(False)
+            self.set_colors(True)
 
     def original_of_selection(self) -> str:
         """Selected text; in a Japanese row, mapped back to the original words."""
@@ -209,6 +215,8 @@ class Section(QWidget):
 
 # ---------------------------------------------------------------------------
 class DictionaryPopup(QFrame):
+    play_requested = Signal()
+
     def __init__(self):
         super().__init__(None, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
@@ -219,12 +227,15 @@ class DictionaryPopup(QFrame):
         self.label.setTextFormat(Qt.TextFormat.RichText)
         self.label.setFont(jp_font(11))
         self.label.setMaximumWidth(460)
+        self.label.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse)
+        self.label.linkActivated.connect(lambda href: href == "play" and self.play_requested.emit())
         lay = QVBoxLayout(self)
         lay.setContentsMargins(12, 10, 12, 10)
         lay.addWidget(self.label)
 
     def _head(self, tok) -> str:
-        h = f"<span style='font-size:20pt'><b>{html.escape(tok.surface)}</b></span>"
+        h = (f"<a href='play' style='text-decoration:none'>🔊</a>&nbsp;"
+             f"<span style='font-size:20pt'><b>{html.escape(tok.surface)}</b></span>")
         if tok.reading and tok.reading != tok.surface:
             h += f"&nbsp;&nbsp;<span style='font-size:13pt;color:{theme.ACCENT}'>{html.escape(tok.reading)}</span>"
         h += f"&nbsp;&nbsp;<span style='color:gray'>{html.escape(japanese.romaji_of(tok))}</span>"
@@ -233,8 +244,8 @@ class DictionaryPopup(QFrame):
         return h
 
     def show_info(self, tok, rect: QRect, gram_html: str, entries, error: str, kanji_html: str,
-                  loading: bool):
-        body = self._head(tok) + gram_html
+                  loading: bool, extra_html: str = ""):
+        body = self._head(tok) + extra_html + gram_html
         if loading:
             body += "<br><i style='color:gray'>Looking up…</i>"
         elif error:
@@ -296,6 +307,7 @@ class ResultWindow(QWidget):
         self._sel_timer.timeout.connect(self._translate_selection)
 
         self.popup = DictionaryPopup()
+        self.popup.play_requested.connect(self._play_word)
 
         # sections, stacked in a splitter so rows can be resized
         self.sections: dict[str, Section] = {}
@@ -319,7 +331,7 @@ class ResultWindow(QWidget):
         foot.addWidget(self.status, 1)
         foot.addWidget(hint)
 
-        self.legend = QLabel(grammar.legend_html())
+        self.legend = QLabel()
         self.legend.setObjectName("muted")
         self.legend.setWordWrap(True)
 
@@ -346,7 +358,7 @@ class ResultWindow(QWidget):
         root.addLayout(foot)
 
         self._apply_section_visibility()
-        self._apply_grammar_mode()
+        self._apply_color_mode()
         self._update_image_visibility()
         dictionary.finished.connect(self._lookup_done)
         dictionary.kanji_finished.connect(self._kanji_done)
@@ -359,6 +371,7 @@ class ResultWindow(QWidget):
         QShortcut(QKeySequence("["), self, lambda: self.speed.setValue(self.speed.value() - 10))
         QShortcut(QKeySequence("]"), self, lambda: self.speed.setValue(self.speed.value() + 10))
         QShortcut(QKeySequence("Ctrl+Shift+C"), self, self._copy_image)
+        QShortcut(QKeySequence("W"), self, self._play_word)
         QShortcut(QKeySequence("Ctrl+,"), self, self.settings_requested.emit)
         QShortcut(QKeySequence("Ctrl+M"), self, lambda: self.mine_btn.isEnabled() and self.mine_requested.emit())
 
@@ -391,16 +404,21 @@ class ResultWindow(QWidget):
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.VLine)
         bar.addWidget(sep)
-        self.grammar_btn = QToolButton()
-        self.grammar_btn.setObjectName("chip")
-        self.grammar_btn.setText("Grammar")
-        self.grammar_btn.setCheckable(True)
-        self.grammar_btn.setToolTip("Color words by part of speech; hold the lookup key over a word to "
-                                    "see its role, tense and form  (Alt+G)")
-        self.grammar_btn.setShortcut(QKeySequence("Alt+G"))
-        self.grammar_btn.setChecked(bool(self.cfg.grammar_mode))
-        self.grammar_btn.toggled.connect(self._grammar_toggled)
-        bar.addWidget(self.grammar_btn)
+        self.color_btns: dict[str, QToolButton] = {}
+        for mode, label, key, tip in (
+                ("grammar", "Grammar", "Alt+G", "Color words by part of speech"),
+                ("pitch", "Pitch", "Alt+P", "Color words by pitch accent: blue heiban, red atamadaka, "
+                                            "orange nakadaka, green odaka"),
+                ("difficulty", "Difficulty", "Alt+D", "Color words from easy (green) to hard (red)")):
+            b = QToolButton()
+            b.setObjectName("chip")
+            b.setText(label)
+            b.setCheckable(True)
+            b.setToolTip(f"{tip}  ({key})\nOnly one coloring at a time; click again to turn it off")
+            b.setShortcut(QKeySequence(key))
+            b.clicked.connect(lambda _=False, m=mode: self._color_clicked(m))
+            self.color_btns[mode] = b
+            bar.addWidget(b)
         self.diff_label = QLabel()
         self.diff_label.setTextFormat(Qt.TextFormat.RichText)
         bar.addSpacing(8)
@@ -451,6 +469,12 @@ class ResultWindow(QWidget):
         self.sel_label.setFont(jp_font(12))
         lay.addWidget(self.sel_label, 1)
         self._sel_result = ""
+        say = QToolButton()
+        say.setText("🔊")
+        say.setAutoRaise(True)
+        say.setToolTip("Hear the highlighted Japanese")
+        say.clicked.connect(self._play_selection)
+        lay.addWidget(say)
         copy = QToolButton()
         copy.setText("Copy")
         copy.setAutoRaise(True)
@@ -525,26 +549,42 @@ class ResultWindow(QWidget):
         for key, sec in self.sections.items():
             sec.view.setFont(self._font_for(key))
         self._apply_section_visibility()
-        self.grammar_btn.setChecked(bool(self.cfg.grammar_mode))
+        self._apply_color_mode()
         lookupkey.set_key(self.cfg.lookup_key)
         self._update_hint()
         self.update_theme_button()
         self.setStyleSheet("")
         self.setStyleSheet(CSS)
 
-    def _grammar_toggled(self, on: bool):
-        self.cfg.grammar_mode = on
+    def _color_clicked(self, mode: str):
+        self.cfg.color_mode = "none" if self.cfg.color_mode == mode else mode
         self.cfg.save()
         self._hide_popup()
-        self._apply_grammar_mode()
-        log.info("Grammar mode %s", "on" if on else "off")
+        self._apply_color_mode()
+        log.info("Word coloring: %s", self.cfg.color_mode)
 
-    def _apply_grammar_mode(self):
-        on = bool(self.cfg.grammar_mode)
-        self.legend.setVisible(on)
+    def _color_fn(self):
+        mode = self.cfg.color_mode
+        if mode == "pitch":
+            return pitch.color_for
+        if mode == "difficulty":
+            return lambda tok: difficulty.word_color(self.difficulty, tok)
+        return grammar.color_for
+
+    def _apply_color_mode(self):
+        mode = self.cfg.color_mode if self.cfg.color_mode in ("grammar", "pitch", "difficulty") else "none"
+        for m, b in self.color_btns.items():
+            b.setChecked(m == mode)
+        legends = {"grammar": grammar.legend_html, "pitch": pitch.legend_html, "difficulty": difficulty.legend_html}
+        self.legend.setText(legends[mode]() if mode in legends else "")
+        self.legend.setVisible(mode in legends)
+        on = mode != "none"
+        fn = self._color_fn()
         for key, sec in self.sections.items():
             if key in RENDER_MODE:
+                sec.view.color_fn = fn
                 sec.view.hover_lookup = on
+                sec.view.set_colors(False)
                 sec.view.set_colors(on)
 
     def _apply_section_visibility(self):
@@ -688,7 +728,11 @@ class ResultWindow(QWidget):
         except Exception:  # noqa: BLE001
             log.exception("Grammar analysis failed for %r", tok.surface)
             gram = ""
-        self._lookup_ctx = {"id": self._lookup_req, "tok": tok, "rect": rect, "gram": gram,
+        extra = pitch.pattern_html(tok)
+        lvl = difficulty.word_level(self.difficulty, tok)
+        if lvl:
+            extra += f"<div style='color:gray;font-size:9pt'>word difficulty ≈{lvl}</div>"
+        self._lookup_ctx = {"id": self._lookup_req, "tok": tok, "rect": rect, "gram": gram, "extra": extra,
                             "entries": None, "error": "", "kanji": "", "loading": True}
         self._render_popup()
         self.dictionary.lookup(self._lookup_req, tok.candidates())
@@ -704,6 +748,10 @@ class ResultWindow(QWidget):
             self.diff_label.setText("")
             return
         self.diff_label.setText(f"<span style='color:{d.color}'><b>{d.jlpt}</b> {d.stars}</span>")
+        if self.cfg.color_mode == "difficulty":
+            for key, sec in self.sections.items():
+                if key in RENDER_MODE:
+                    sec.view.refresh_colors()
         self.diff_label.setToolTip(f"Estimated difficulty: {d.label} (≈JLPT {d.jlpt})\n• "
                                    + "\n• ".join(d.reasons))
 
@@ -711,7 +759,7 @@ class ResultWindow(QWidget):
         c = self._lookup_ctx
         if c and self.isVisible():
             self.popup.show_info(c["tok"], c["rect"], c["gram"], c["entries"], c["error"], c["kanji"],
-                                 c["loading"])
+                                 c["loading"], c.get("extra", ""))
 
     def _lookup_done(self, req_id, query, entries, error):
         if not self._lookup_ctx or req_id != self._lookup_ctx["id"]:
@@ -838,6 +886,20 @@ class ResultWindow(QWidget):
         self.cfg.save()
         log.info("Speech speed -> %.2f×", self.cfg.tts_speed)
         self.speaker.change_speed(self.cfg.tts_speed)
+
+    def _play_word(self):
+        c = self._lookup_ctx
+        if not c or not self.popup.isVisible():
+            return
+        word = c["tok"].surface
+        log.info("Read word: %s", word)
+        self.speaker.play(word, self._speed_value())
+
+    def _play_selection(self):
+        text = self._sel_result if (self._sel_view is self.sections["english"].view) else self._sel_text
+        if text:
+            log.info("Read selection: %s", short(text))
+            self.speaker.play(text, self._speed_value())
 
     def toggle_play(self):
         if self.speaker.busy():

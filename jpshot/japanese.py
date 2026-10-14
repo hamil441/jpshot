@@ -42,6 +42,8 @@ class Token:
     pos2: str = ""
     ctype: str = ""   # conjugation type, e.g. 五段-カ行
     cform: str = ""   # conjugation form, e.g. 連用形-一般
+    atype: str = ""   # pitch accent type (UniDic aType): 0 heiban, 1 atamadaka, n …
+    kana_base: str = ""  # dictionary-form reading (katakana)
 
     def candidates(self) -> list[str]:
         out = []
@@ -97,6 +99,8 @@ def tokenize(text: str) -> list[list[Token]]:
                 pos2=_feat(w, "pos2") or "",
                 ctype=_feat(w, "cType") or "",
                 cform=_feat(w, "cForm") or "",
+                atype=_feat(w, "aType") or "",
+                kana_base=_feat(w, "kanaBase") or "",
             ))
         lines.append(toks)
         log.debug("tokens: %s", " | ".join(f"{t.surface}/{t.reading or '-'}/{t.base}/{t.pos}" for t in toks))
