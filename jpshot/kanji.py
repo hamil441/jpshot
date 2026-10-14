@@ -391,29 +391,35 @@ class KanjiDB:
     def _model_id(self, provider: str) -> str:
         return self.story_model if provider == "anthropic" else self.ollama_model
 
-    def _llm(self, prompt: str) -> str:
+    def chat(self, messages: list[dict], system: str = "", max_tokens: int = 900) -> str:
+        """Multi-turn chat with the configured writer. messages: [{"role": "user"|"assistant", "content"}]."""
         provider = self._active_provider()
         sess = self._session_factory()
         if provider == "anthropic":
+            body = {"model": self.story_model, "max_tokens": max_tokens, "messages": messages}
+            if system:
+                body["system"] = system
             r = sess.post("https://api.anthropic.com/v1/messages",
                           headers={"x-api-key": self._key(), "anthropic-version": "2023-06-01",
-                                   "content-type": "application/json"},
-                          json={"model": self.story_model, "max_tokens": 260,
-                                "messages": [{"role": "user", "content": prompt}]}, timeout=40)
+                                   "content-type": "application/json"}, json=body, timeout=90)
             if r.status_code != 200:
                 raise RuntimeError(f"Anthropic API HTTP {r.status_code}: {r.text[:200]}")
-            text = "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
-        elif provider == "ollama":
+            return "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
+        if provider == "ollama":
+            msgs = ([{"role": "system", "content": system}] if system else []) + messages
             r = sess.post(f"{self.ollama_url}/api/chat",
-                          json={"model": self.ollama_model, "stream": False,
-                                "messages": [{"role": "user", "content": prompt}],
-                                "options": {"temperature": 0.7}}, timeout=120)
+                          json={"model": self.ollama_model, "stream": False, "messages": msgs,
+                                "options": {"temperature": 0.6}}, timeout=240)
             if r.status_code != 200:
                 raise RuntimeError(f"Ollama HTTP {r.status_code}: {r.text[:200]} "
                                    f"(did you run `ollama pull {self.ollama_model}`?)")
-            text = r.json().get("message", {}).get("content", "")
-        else:
+            return r.json().get("message", {}).get("content", "")
+        raise RuntimeError("No explanation writer set up — choose Ollama or add an API key in ⚙ Settings")
+
+    def _llm(self, prompt: str) -> str:
+        if self._active_provider() == "none":
             return ""
+        text = self.chat([{"role": "user", "content": prompt}], max_tokens=260)
         text = re.sub(r"[*_#`]+", "", re.sub(r"\s+", " ", text)).strip().strip('"')
         return " ".join(split_sentences(text)[:3])
 

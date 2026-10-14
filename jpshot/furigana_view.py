@@ -59,6 +59,7 @@ class _Canvas(QWidget):
         self.color_fn = grammar.color_for
         self.pitch_fn = None   # tok -> [high?, …] per sound, in pitch mode
         self.known_kanji: set[str] = set()
+        self.marked: set[int] = set()   # id(token) of words in a highlighted grammar pattern
         self.unknown_only = False   # readings only over kanji not in known_kanji
 
     # -- layout -----------------------------------------------------------
@@ -139,6 +140,8 @@ class _Canvas(QWidget):
                 p.fillRect(box, hl)
             if it is self.hover:
                 p.fillRect(QRect(it.x, it.y + TOP + ruby_h + 2, it.w, fb.height() + 2), hover_bg)
+            if id(it.tok) in self.marked:
+                p.fillRect(QRect(it.x, it.y + self.line_h - 4, it.w, 3), QColor(80, 160, 255, 200))
             col = QColor(text_col)
             if self.colored:
                 c = self.color_fn(it.tok)
@@ -326,6 +329,10 @@ class FuriganaView(QScrollArea):
         self.canvas.pitch_fn = fn
 
     def refresh_colors(self):
+        self.canvas.update()
+
+    def mark_tokens(self, ids: set[int]):
+        self.canvas.marked = set(ids)
         self.canvas.update()
 
     def set_known_kanji(self, kanji: set[str], unknown_only: bool):

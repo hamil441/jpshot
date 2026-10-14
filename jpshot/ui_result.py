@@ -18,7 +18,7 @@ from PySide6.QtGui import (QClipboard, QColor, QCursor, QFont, QGuiApplication, 
 from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QSlider,
                                QSplitter, QTextEdit, QToolButton, QVBoxLayout, QWidget)
 
-from . import difficulty, grammar, japanese, kanji, lookupkey, pitch, theme, translate
+from . import difficulty, grammar, japanese, kanji, lookupkey, patterns, pitch, theme, translate
 from .furigana_view import FuriganaView
 from .image_view import ImageView
 from .config import ALL_SECTIONS
@@ -164,7 +164,26 @@ class WordView(QTextEdit):
 
     def clear_hover(self):
         self._hover = None
-        self.setExtraSelections([])
+        self.setExtraSelections(getattr(self, "_marks", []))
+
+    def mark_tokens(self, ids: set[int]):
+        """Underline the words of a grammar pattern."""
+        marks = []
+        for sp in self.spans:
+            if id(sp.token) in ids:
+                sel = QTextEdit.ExtraSelection()
+                fmt = QTextCharFormat()
+                fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SingleUnderline)
+                fmt.setUnderlineColor(QColor(80, 160, 255))
+                fmt.setBackground(QColor(80, 160, 255, 45))
+                sel.format = fmt
+                c = QTextCursor(self.document())
+                c.setPosition(sp.start)
+                c.setPosition(sp.end, QTextCursor.MoveMode.KeepAnchor)
+                sel.cursor = c
+                marks.append(sel)
+        self._marks = marks
+        self.setExtraSelections(marks)
 
     def span_at(self, pos: QPoint) -> japanese.Span | None:
         if not self.spans:
@@ -197,7 +216,7 @@ class WordView(QTextEdit):
         c.setPosition(span.start)
         c.setPosition(span.end, QTextCursor.MoveMode.KeepAnchor)
         sel.cursor = c
-        self.setExtraSelections([sel])
+        self.setExtraSelections(getattr(self, "_marks", []) + [sel])
         a = QTextCursor(self.document())
         a.setPosition(span.start)
         b = QTextCursor(self.document())
@@ -377,6 +396,13 @@ class ResultWindow(QWidget):
         self.legend = QLabel()
         self.legend.setObjectName("muted")
         self.legend.setWordWrap(True)
+        self.pattern_bar = QLabel()
+        self.pattern_bar.setWordWrap(True)
+        self.pattern_bar.setTextFormat(Qt.TextFormat.RichText)
+        self.pattern_bar.linkActivated.connect(self._pattern_clicked)
+        self.pattern_bar.hide()
+        self.pattern_matches: list = []
+        self._marked_pattern = -1
 
         # screenshot on the left, text on the right
         self.image_view = ImageView()
@@ -396,11 +422,22 @@ class ResultWindow(QWidget):
         root = QVBoxLayout(self)
         root.addLayout(self._build_toolbar())
         root.addWidget(self.legend)
+        root.addWidget(self.pattern_bar)
         root.addWidget(self.hsplit, 1)
         root.addWidget(self._build_audio())
         root.addLayout(foot)
 
-        self.sections["english"].view.set_content = self._english_setter(self.sections["english"].view)
+        en_view = self.sections["english"].view
+        en_view.set_content = self._english_setter(en_view)
+        # the English box is editable: clicking a Japanese box (or Ctrl+Enter) re-translates it
+        en_view.setReadOnly(False)
+        en_view.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
+        en_view.setToolTip("Edit the English — click a Japanese box (or press Ctrl+Enter) to update them")
+        self._en_dirty = False
+        self._en_programmatic = False
+        en_view.textChanged.connect(self._english_edited)
+        QShortcut(QKeySequence("Ctrl+Return"), en_view, self._apply_english_edit,
+                  context=Qt.ShortcutContext.WidgetShortcut)
         fv = self.sections["furigana"].view
         if isinstance(fv, FuriganaView):
             fv.set_known_kanji(self.known.known_kanji(), bool(self.cfg.furigana_unknown_only))
@@ -421,6 +458,7 @@ class ResultWindow(QWidget):
         QShortcut(QKeySequence("Ctrl+Shift+C"), self, self._copy_image)
         QShortcut(QKeySequence("W"), self, self._play_word)
         QShortcut(QKeySequence("K"), self, self._toggle_known)
+        QShortcut(QKeySequence("Ctrl+E"), self, lambda: self.ask_btn.isEnabled() and self.open_ask())
         QShortcut(QKeySequence("Ctrl+,"), self, self.settings_requested.emit)
         QShortcut(QKeySequence("Ctrl+M"), self, lambda: self.mine_btn.isEnabled() and self.mine_requested.emit())
 
@@ -478,6 +516,12 @@ class ResultWindow(QWidget):
         bar.addSpacing(6)
         bar.addWidget(self.known_label)
         bar.addStretch()
+        self.ask_btn = QToolButton()
+        self.ask_btn.setText("❓ Ask")
+        self.ask_btn.setToolTip("Ask a tutor about this sentence  (Ctrl+E)")
+        self.ask_btn.setEnabled(False)
+        self.ask_btn.clicked.connect(self.open_ask)
+        bar.addWidget(self.ask_btn)
         self.mine_btn = QToolButton()
         self.mine_btn.setText("⛏ Mine")
         self.mine_btn.setToolTip("Make an Anki card from this capture  (Ctrl+M)")
@@ -535,11 +579,6 @@ class ResultWindow(QWidget):
         copy.setToolTip("Copy this translation")
         copy.clicked.connect(lambda: self._sel_result and copy_text(self._sel_result))
         lay.addWidget(copy)
-        close = QToolButton()
-        close.setText("✕")
-        close.setAutoRaise(True)
-        close.clicked.connect(self.selbar.hide)
-        lay.addWidget(close)
         self.selbar.hide()
         return self.selbar
 
@@ -702,6 +741,7 @@ class ResultWindow(QWidget):
         self._update_image_visibility()
         self.copy_img_btn.setEnabled(pixmap is not None and not pixmap.isNull())
         self.mine_btn.setEnabled(True)
+        self.ask_btn.setEnabled(True)
         self._sel_text = ""
         self._lookup_ctx = None
         self.speaker.stop()
@@ -744,8 +784,40 @@ class ResultWindow(QWidget):
 
         def setter(text: str, spans=None):
             is_message = text.startswith(("Translating", "(Translation failed"))
-            base(text, None if is_message else english_spans(text))
+            self._en_programmatic = True
+            try:
+                base(text, None if is_message else english_spans(text))
+            finally:
+                self._en_programmatic = False
+            self._en_dirty = False
         return setter
+
+    def _english_edited(self):
+        if self._en_programmatic:
+            return
+        en = self.sections["english"]
+        if not self._en_dirty:
+            self._en_dirty = True
+            en.badge.setText("edited — click a Japanese box to update")
+        en.view.spans = []          # word positions are stale until re-applied
+
+    def _apply_english_edit(self):
+        en = self.sections["english"]
+        text = en.view.toPlainText().strip()
+        if not self._en_dirty or not text:
+            return
+        self._en_dirty = False
+        en.badge.setText("your edit")
+        en.view.spans = english_spans(en.view.toPlainText())
+        self._req += 1
+        req = self._req
+        for k in RENDER_MODE:
+            self.sections[k].view.set_content("翻訳中… (translating)")
+        self._set_ja_badges("translated from your English")
+        log.info("Re-translating edited English: %s", short(text))
+        run_async(translate.translate, flatten(text, "en"), "en", "ja", self.cfg.translator,
+                  on_done=lambda out: self._translated(req, "en", out),
+                  on_error=lambda msg: self._translate_failed(req, "en", msg))
 
     def _set_ja_badges(self, text: str):
         for k in RENDER_MODE:
@@ -794,6 +866,7 @@ class ResultWindow(QWidget):
             view.set_content(t, spans)
         self.play_btn.setEnabled(bool(text.strip()))
         self._update_known_badge()
+        self._update_patterns()
         self._diff_req += 1
         self.difficulty = None
         if text.strip():
@@ -870,7 +943,7 @@ class ResultWindow(QWidget):
                 sec.view.clear_hover()
         self._lookup_req += 1
         try:
-            gram = grammar.to_html(grammar.describe(self.ja_lines, tok))
+            gram = grammar.to_html(grammar.describe(self.ja_lines, tok)) + self._patterns_html(tok)
         except Exception:  # noqa: BLE001
             log.exception("Grammar analysis failed for %r", tok.surface)
             gram = ""
@@ -1102,7 +1175,68 @@ class ResultWindow(QWidget):
         pass   # (stroke-order window — added below)
 
     def _show_pattern(self, pid: str):
-        pass   # (grammar patterns — added below)
+        self._pattern_clicked(f"p:{pid}")
+
+    # -- grammar patterns ---------------------------------------------------
+    def _update_patterns(self):
+        try:
+            self.pattern_matches = patterns.detect(self.ja_lines) if self.ja_text.strip() else []
+        except Exception:  # noqa: BLE001
+            log.exception("Pattern detection failed")
+            self.pattern_matches = []
+        self._marked_pattern = -1
+        self._mark_pattern_tokens(set())
+        if not self.pattern_matches:
+            self.pattern_bar.hide()
+            return
+        chips = []
+        for i, m in enumerate(self.pattern_matches):
+            chips.append(f"<a href='p:{i}' style='text-decoration:none'><b>{html.escape(m.pattern.form)}</b></a> "
+                         f"<span style='color:gray'>{html.escape(m.pattern.meaning)} · {m.pattern.jlpt}</span>")
+        self.pattern_bar.setText("📘 " + "&nbsp;&nbsp;│&nbsp;&nbsp;".join(chips))
+        self.pattern_bar.setToolTip("Grammar points in this sentence — click one to underline it")
+        self.pattern_bar.show()
+        log.info("Grammar points: %s", ", ".join(m.pattern.form for m in self.pattern_matches))
+
+    def _pattern_clicked(self, href: str):
+        try:
+            i = int(href.split(":", 1)[1])
+        except ValueError:
+            return
+        if i == self._marked_pattern or not (0 <= i < len(self.pattern_matches)):
+            self._marked_pattern = -1
+            self._mark_pattern_tokens(set())
+            return
+        m = self.pattern_matches[i]
+        line = self.ja_lines[m.line]
+        self._marked_pattern = i
+        self._mark_pattern_tokens({id(t) for t in line[m.first:m.last + 1]})
+        self.status.setText(f"{m.pattern.form}: {m.pattern.meaning} ({m.pattern.jlpt})")
+
+    def _mark_pattern_tokens(self, ids: set[int]):
+        for key, sec in self.sections.items():
+            if key in RENDER_MODE and hasattr(sec.view, "mark_tokens"):
+                sec.view.mark_tokens(ids)
+
+    def _patterns_html(self, tok) -> str:
+        ms = patterns.matches_for(self.pattern_matches, self.ja_lines, tok)
+        return "".join(f"<div>📘 <b>{html.escape(m.pattern.form)}</b> — {html.escape(m.pattern.meaning)} "
+                       f"<span style='color:gray'>({m.pattern.jlpt})</span></div>" for m in ms)
+
+    # -- tutor --------------------------------------------------------------
+    def open_ask(self):
+        from .ask import AskDialog
+
+        sentence = flatten(self.ja_text, "ja")
+        if not sentence:
+            return
+        english = self.sections["english"].view.toPlainText()
+        if english.startswith(("Translating", "(Translation failed")):
+            english = ""
+        dlg = AskDialog(self.dictionary.kanji, sentence, english,
+                        [f"{m.pattern.form} ({m.pattern.meaning})" for m in self.pattern_matches], self)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dlg.show()
 
     def _play_word(self):
         c = self._lookup_ctx
@@ -1169,7 +1303,10 @@ class ResultWindow(QWidget):
             if v is not None:
                 v.clear_hover()
                 v.lookup_at(v.viewport().mapFromGlobal(QCursor.pos()))
-        elif t == QEvent.Type.MouseButtonPress and self.popup.isVisible() \
+        if t == QEvent.Type.MouseButtonPress and getattr(self, "_en_dirty", False) and any(
+                obj is self.sections[k].view.viewport() for k in RENDER_MODE):
+            self._apply_english_edit()
+        if t == QEvent.Type.MouseButtonPress and self.popup.isVisible() \
                 and any(obj is s.view.viewport() for s in self.sections.values()):
             self._hide_popup()
         return False
