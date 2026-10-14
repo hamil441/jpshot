@@ -87,7 +87,10 @@ Default hotkey: **Ctrl+Alt+J**. Left-clicking the tray icon also starts a captur
 
 | Where | Key / action | Does |
 |---|---|---|
-| Capture | drag | select a region |
+| Capture | drag | draw a box |
+| Capture | drag the handles / drag inside | resize / move the box (drag outside to start over) |
+| Capture | arrow keys (Shift = resize, Ctrl = ×10) | nudge the box |
+| Capture | Enter or double-click | capture |
 | Capture | Esc / right-click | cancel |
 | Result | click a box name in the top row, or Alt+1 … Alt+5 | show only that box (English, 日本語, Furigana, ひらがな, Rōmaji) |
 | Result | Ctrl+click a box name | show several boxes at once |
