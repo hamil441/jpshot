@@ -33,7 +33,7 @@ JP_FONTS = ["Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic UI", "Meiryo", "Hirag
             "Hiragino Kaku Gothic ProN", "MS Gothic", "IPAexGothic", "TakaoPGothic"]
 SECTION_TITLES = {"english": "English", "japanese": "日本語", "furigana": "Furigana",
                   "hiragana": "ひらがな", "romaji": "Rōmaji"}
-UNKNOWN_COLOR, KNOWN_COLOR = "#e8556d", "#8e9099"
+UNKNOWN_COLOR, KNOWN_COLOR = "#e8556d", "#2fb383"
 CHIP_LABELS = {"english": "English\n英語", "japanese": "Japanese\n日本語", "furigana": "Furigana\nふりがな",
                "hiragana": "Hiragana\nひらがな", "romaji": "Rōmaji\nローマ字"}
 RENDER_MODE = {"japanese": "original", "furigana": "furigana", "hiragana": "hiragana", "romaji": "romaji"}
@@ -771,8 +771,11 @@ class ResultWindow(QWidget):
         elif mode == "difficulty":
             text = difficulty.legend_html()
         elif mode == "known":
+            plain = "white" if theme.is_dark(self.cfg.theme) else "black"
             text = (f"<span style='color:{UNKNOWN_COLOR}'>■</span> new to you  "
-                    f"<span style='color:{KNOWN_COLOR}'>■</span> known  ·  "
+                    f"<span style='color:{KNOWN_COLOR}'>■</span> known  "
+                    f"<span style='color:palette(text)'>■</span> {plain} = not rated "
+                    f"(particles, endings, symbols)  ·  "
                     f"<span style='color:gray'>hold Shift on a word and press K to mark it known/unknown "
                     + (f"· {self.known.total():,} known words</span>" if self.known.total() else
                        "· no known words yet — ⚙ Settings → Known words → Sync now</span>"))
