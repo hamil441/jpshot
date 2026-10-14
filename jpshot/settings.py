@@ -72,6 +72,22 @@ class SettingsDialog(QDialog):
                                   ("jisho", "jisho.org")], cfg.dictionary)
         f.addRow("Dictionary", self.dictionary)
 
+        # -- Kanji stories ---------------------------------------------------
+        story = QGroupBox("Kanji stories (optional)")
+        f = QFormLayout(story)
+        self.api_key = QLineEdit(cfg.anthropic_api_key)
+        self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.api_key.setPlaceholderText("Anthropic API key (sk-ant-…) — leave empty to skip")
+        f.addRow("API key", self.api_key)
+        self.story_model = QLineEdit(cfg.story_model)
+        f.addRow("Model", self.story_model)
+        expl = QLabel("With a key, each kanji gets a short (≤3 sentence) Remembering-the-Kanji-style "
+                      "story, written once and saved. Without one, JPShot shows how the parts are laid out "
+                      "and where the character comes from. The key is stored in config.json.")
+        expl.setWordWrap(True)
+        expl.setStyleSheet("color:gray")
+        f.addRow(expl)
+
         # -- Look -----------------------------------------------------------
         look = QGroupBox("Appearance")
         f = QFormLayout(look)
@@ -113,7 +129,7 @@ class SettingsDialog(QDialog):
         note.setWordWrap(True)
 
         lay = QVBoxLayout(self)
-        for g in (cap, svc, look):
+        for g in (cap, svc, story, look):
             lay.addWidget(g)
         lay.addWidget(note)
         lay.addLayout(bottom)
@@ -128,11 +144,13 @@ class SettingsDialog(QDialog):
         c.tts_voice = self.voice.currentData()
         c.dictionary = self.dictionary.currentData()
         c.theme = self.theme.currentData()
+        c.anthropic_api_key = self.api_key.text().strip()
+        c.story_model = self.story_model.text().strip() or "claude-haiku-5-5"
         c.japanese_font_size = self.ja_size.value()
         c.english_font_size = self.en_size.value()
         c.sections = [k for k in ALL_SECTIONS if self.section_boxes[k].isChecked()]
         c.save()
-        log.info("Settings saved: %s", c)
+        log.info("Settings saved (API key %s)", "set" if c.anthropic_api_key else "not set")
         self.applied.emit()
 
     def _save_and_close(self):

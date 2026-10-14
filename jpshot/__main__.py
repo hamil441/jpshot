@@ -121,7 +121,9 @@ def main(argv=None) -> int:
 
     setup_logging(args.debug)
     cfg = Config.load()
-    log.debug("Config %s: %s", Config.path(), cfg)
+    from dataclasses import asdict
+    log.debug("Config %s: %s", Config.path(),
+              {k: ("***" if k == "anthropic_api_key" and v else v) for k, v in asdict(cfg).items()})
 
     if args.setup_offline:
         from .translate import install_offline_models

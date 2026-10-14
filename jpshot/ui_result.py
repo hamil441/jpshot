@@ -652,6 +652,12 @@ class ResultWindow(QWidget):
     def _kanji_done(self, req_id, infos):
         if not self._lookup_ctx or req_id != self._lookup_ctx["id"]:
             return
+        for k in infos:
+            if k.svg and not k.image_path:
+                try:
+                    k.image_path = kanji.render_png(k)
+                except Exception:  # noqa: BLE001
+                    log.exception("Could not draw kanji %s", k.char)
         self._lookup_ctx["kanji"] = kanji.to_html(infos, theme.ACCENT)
         self._render_popup()
 

@@ -68,6 +68,7 @@ class JPShotApp(QObject):
 
         ocr.configure(cfg.tesseract_cmd)
         self.dictionary = Dictionary(cfg.dictionary)
+        self._apply_story_settings()
         self.speaker = Speaker(cfg)
         self.result = ResultWindow(cfg, self.dictionary, self.speaker)
         self.result.settings_requested.connect(self.open_settings)
@@ -185,9 +186,14 @@ class JPShotApp(QObject):
         theme.apply(self.cfg.theme)
         ocr.configure(self.cfg.tesseract_cmd)
         self.dictionary.set_backend(self.cfg.dictionary)
+        self._apply_story_settings()
         self.result.apply_settings()
         if self.cfg.hotkey != old_hotkey:
             self._setup_hotkey()
+
+    def _apply_story_settings(self):
+        self.dictionary.kanji.api_key = self.cfg.anthropic_api_key.strip()
+        self.dictionary.kanji.story_model = self.cfg.story_model.strip() or "claude-haiku-5-5"
 
     def toggle_theme(self):
         self.cfg.theme = "light" if theme.is_dark(self.cfg.theme) else "dark"

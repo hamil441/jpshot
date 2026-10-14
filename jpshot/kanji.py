@@ -1,9 +1,12 @@
 """Kanji breakdown in the spirit of Remembering the Kanji: keyword, meanings, readings, components.
 
 Data sources (downloaded on first use, cached in ~/.cache/jpshot):
-  * KRADFILE (EDRDG, CC BY-SA 4.0) for each kanji's component parts
-  * kanjiapi.dev for meanings, readings, grade/JLPT and the Heisig (RTK) keyword
-  * offline jamdict/KANJIDIC2 instead, if installed
+  * KanjiVG (Ulrich Apel, CC BY-SA 3.0): stroke data split into components with positions,
+    used to draw each part in its own color
+  * KRADFILE (EDRDG, CC BY-SA 4.0): component lists when KanjiVG has no split
+  * kanjiapi.dev: meanings, readings, grade/JLPT and the Heisig (RTK) keyword
+  * Wiktionary: glyph origin (why the parts make the character)
+  * optional: the Anthropic API writes a short RTK-style story (needs an API key)
 """
 from __future__ import annotations
 
@@ -14,6 +17,7 @@ import logging
 import os
 import re
 import sys
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -96,7 +100,14 @@ class KanjiInfo:
     grade: int | None = None
     jlpt: int | None = None
     parts: list[tuple[str, str]] = field(default_factory=list)  # (component, meaning)
+    part_colors: list[str] = field(default_factory=list)        # same order as parts
+    part_positions: list[str] = field(default_factory=list)     # KanjiVG position words
     origin: str = ""             # why the parts make this character (Wiktionary glyph origin)
+    origin_kind: str = ""        # e.g. "sound + meaning"
+    svg: str = ""                # KanjiVG drawing with each part colored
+    image_path: str = ""         # rendered PNG (made on the UI thread)
+    story: str = ""              # ≤3-sentence mnemonic
+    story_is_ai: bool = False
 
 
 def is_kanji(c: str) -> bool:
@@ -104,43 +115,86 @@ def is_kanji(c: str) -> bool:
             or "\U00020000" <= c <= "\U0003134f" or c in "々〆")
 
 
-# Plain-language explanation of each kind of character formation, shown before the details.
+# kind of character formation -> (short label, one-line explanation)
 ORIGIN_KINDS = [
-    ("phono-semantic compound", "Sound + meaning: one part hints at the meaning, the other at the "
-                                "pronunciation"),
-    ("ideogrammatic compound", "Meaning combination: the parts' meanings combine into the idea"),
-    ("compound ideogram", "Meaning combination: the parts' meanings combine into the idea"),
-    ("pictogram", "Picture: it started as a drawing of the thing"),
-    ("simple ideogram", "Symbol: an abstract sign for the idea"),
-    ("ideogram", "Symbol: an abstract sign for the idea"),
-    ("shinjitai", "Simplified Japanese form of an older character"),
-    ("simplified from", "Simplified form of an older character"),
-    ("variant of", "A variant of another character"),
+    ("phono-semantic compound", "sound + meaning", "one part gives the meaning, the other the sound"),
+    ("ideogrammatic compound", "meanings combined", "the parts' meanings add up to the idea"),
+    ("compound ideogram", "meanings combined", "the parts' meanings add up to the idea"),
+    ("pictogram", "picture", "it began as a drawing of the thing"),
+    ("simple ideogram", "symbol", "an abstract sign for the idea"),
+    ("ideogram", "symbol", "an abstract sign for the idea"),
+    ("shinjitai", "simplified form", "a simplified Japanese form of an older character"),
+    ("simplified from", "simplified form", "a simplified form of an older character"),
+    ("variant of", "variant", "a variant of another character"),
 ]
+
+PART_COLORS = ["#e8556d", "#3b8fe8", "#2fb383", "#f0a030", "#a46ee0", "#d65db1"]
+OTHER_COLOR = "#9aa0a6"
+KVG = "http://kanjivg.tagaini.net"
+SVG = "http://www.w3.org/2000/svg"
+POSITION_WORDS = {
+    "left": "on the left", "right": "on the right", "top": "on top", "bottom": "at the bottom",
+    "tare": "draped over the top-left", "tarec": "inside", "nyo": "sweeping under the bottom-left",
+    "nyoc": "inside", "kamae": "around the outside", "kamaec": "inside", "kamae1": "around",
+    "kamae2": "around",
+}
 
 
 def clean_origin_html(h: str) -> str:
-    """Wiktionary 'Glyph origin' section HTML -> short learner-friendly text."""
+    """Wiktionary 'Glyph origin' section HTML -> short plain text (≤2 sentences)."""
     h = re.sub(r"(?is)<(style|script|table|sup|h[1-6])\b.*?</\1>", " ", h)
     h = re.sub(r"(?is)<div[^>]*(?:mw-collapsible|thumb|gallery|NavFrame)[^>]*>.*?</div>", " ", h)
     h = re.sub(r"(?is)<ol class=\"references\".*?</ol>", " ", h)
     t = html.unescape(re.sub(r"<[^>]+>", " ", h))
     t = re.sub(r"\[\s*edit\s*\]|\[\d+\]", " ", t)
-    # drop Old/Middle Chinese reconstructions and bare CJK-only parentheticals
     t = re.sub(r"\([^()]*\b(?:OC|MC|Baxter|Zhengzhang)\b[^()]*\)", "", t)
     t = re.sub(r"\(\s*[\u3000-\u30ff\u3400-\u9fff／/,，、\s]*\)", "", t)
     t = re.sub(r"\s+", " ", t).strip()
     t = re.sub(r"\s+([,.;:)])", r"\1", t).replace("( ", "(")
-    # keep the first two sentences
-    sentences = re.split(r"(?<=[.!?])\s+", t)
-    t = " ".join(sentences[:2])
-    if len(t) > 360:
-        t = t[:357].rsplit(" ", 1)[0] + "…"
-    low = t.lower()
-    for key, plain in ORIGIN_KINDS:
-        if key in low:
-            return f"{plain}. {t}"
+    t = " ".join(split_sentences(t)[:2])
+    if len(t) > 300:
+        t = t[:297].rsplit(" ", 1)[0] + "…"
     return t
+
+
+def split_sentences(t: str) -> list[str]:
+    return [x for x in re.split(r"(?<=[.!?])\s+", t.strip()) if x]
+
+
+def origin_kind(origin: str) -> tuple[str, str]:
+    low = origin.lower()
+    for key, short, expl in ORIGIN_KINDS:
+        if key in low:
+            return short, expl
+    return "", ""
+
+
+def layout_sentence(k: "KanjiInfo") -> str:
+    """'cliff (厂) draped over the top-left, grove (林) inside and day (日) at the bottom → calendar.'"""
+    if not k.parts:
+        return ""
+    items = []
+    for i, (p, m) in enumerate(k.parts):
+        pos = POSITION_WORDS.get(k.part_positions[i], "") if i < len(k.part_positions) else ""
+        items.append(" ".join(x for x in (f"{m or 'part'} ({p})", pos) if x))
+    body = items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+    key = k.keyword or (k.meanings[0] if k.meanings else "")
+    return f"{body[0].upper()}{body[1:]} → {key}."
+
+
+def template_story(k: "KanjiInfo") -> str:
+    """Fallback without AI: layout + origin, at most 3 sentences."""
+    sentences = []
+    lay = layout_sentence(k)
+    if lay:
+        sentences.append(lay)
+    if k.origin:
+        short, expl = origin_kind(k.origin)
+        orig = split_sentences(k.origin)
+        if short:
+            sentences.append(f"It's {short}: {expl}.")
+        sentences += orig[:1]
+    return " ".join(sentences[:3])
 
 
 def cache_dir() -> Path:
@@ -171,7 +225,14 @@ class KanjiDB:
         except Exception:  # noqa: BLE001
             self._api_cache = {}
         self._jam = None
-        self._origin_path = cache_dir() / "origins.json"
+        self._origin_path = cache_dir() / "origins2.json"
+        self._story_path = cache_dir() / "stories.json"
+        try:
+            self._stories: dict[str, str] = json.loads(self._story_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            self._stories = {}
+        self.api_key = ""
+        self.story_model = "claude-haiku-5-5"
         try:
             self._origins: dict[str, str] = json.loads(self._origin_path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
@@ -201,6 +262,125 @@ class KanjiDB:
         self._origins[ch] = text
         try:
             self._origin_path.write_text(json.dumps(self._origins, ensure_ascii=False), encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+        return text
+
+    # -- KanjiVG: components with positions, colored drawing -------------------
+    def _kanjivg(self, ch: str) -> str | None:
+        d = cache_dir() / "kanjivg"
+        d.mkdir(exist_ok=True)
+        path = d / f"{ord(ch):05x}.svg"
+        if path.exists():
+            text = path.read_text(encoding="utf-8")
+            return text or None
+        url = f"https://raw.githubusercontent.com/KanjiVG/kanjivg/master/kanji/{ord(ch):05x}.svg"
+        try:
+            r = self._session_factory().get(url, timeout=10)
+            log.debug("KanjiVG %s -> HTTP %s", ch, r.status_code)
+            if r.status_code == 404:
+                path.write_text("", encoding="utf-8")   # remember: no data for this kanji
+                return None
+            r.raise_for_status()
+            path.write_text(r.text, encoding="utf-8")
+            return r.text
+        except Exception as e:  # noqa: BLE001
+            log.warning("KanjiVG download for %s failed: %s", ch, e)
+            return None
+
+    @staticmethod
+    def _vg_split(svg_text: str, ch: str):
+        """Returns (parts [(element, position)], colored svg text) or None."""
+        ET.register_namespace("", SVG)
+        ET.register_namespace("kvg", KVG)
+        svg_text = re.sub(r"(?s)<!DOCTYPE.*?\]>", "", svg_text)
+        if "xmlns:kvg" not in svg_text.split("<svg", 1)[-1].split(">", 1)[0]:
+            svg_text = svg_text.replace("<svg ", f'<svg xmlns:kvg="{KVG}" ', 1)
+        root = ET.fromstring(svg_text)
+        el_attr, pos_attr = f"{{{KVG}}}element", f"{{{KVG}}}position"
+        # remove the stroke-number labels
+        for parent in root.iter():
+            for child in list(parent):
+                if child.get("id", "").startswith("kvg:StrokeNumbers"):
+                    parent.remove(child)
+        top = next((g for g in root.iter(f"{{{SVG}}}g") if g.get(el_attr) == ch), None)
+        if top is None:
+            return None
+        parts: dict[str, dict] = {}
+        order: list[str] = []
+        loose: list = []
+
+        def walk(g, inherited_pos=""):
+            for child in g:
+                if child.tag == f"{{{SVG}}}g":
+                    el = child.get(el_attr)
+                    pos = child.get(pos_attr) or inherited_pos
+                    if el and el != ch:
+                        if el not in parts:
+                            parts[el] = {"pos": pos, "paths": []}
+                            order.append(el)
+                        parts[el]["paths"] += list(child.iter(f"{{{SVG}}}path"))
+                    else:
+                        walk(child, pos)
+                elif child.tag == f"{{{SVG}}}path":
+                    loose.append(child)
+
+        walk(top)
+        for i, el in enumerate(order):
+            color = PART_COLORS[i % len(PART_COLORS)]
+            for path in parts[el]["paths"]:
+                path.set("style", f"stroke:{color}")
+        for path in loose:
+            path.set("style", f"stroke:{OTHER_COLOR if order else PART_COLORS[0]}")
+        for g in root.iter(f"{{{SVG}}}g"):
+            st = g.get("style", "")
+            if "stroke-width" in st:
+                g.set("style", re.sub(r"stroke-width:[\d.]+", "stroke-width:4", st))
+        return [(el, parts[el]["pos"]) for el in order], ET.tostring(root, encoding="unicode")
+
+    # -- AI story ---------------------------------------------------------------
+    def story(self, k: KanjiInfo) -> str:
+        key = self.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        if not key:
+            return ""
+        cache_key = f"{k.char}|{self.story_model}"
+        if cache_key in self._stories:
+            return self._stories[cache_key]
+        parts = "; ".join(
+            f"{p} '{m or '?'}'" + (f" ({POSITION_WORDS.get(k.part_positions[i], '')})"
+                                   if i < len(k.part_positions) and k.part_positions[i] in POSITION_WORDS else "")
+            for i, (p, m) in enumerate(k.parts)) or "(no separate parts)"
+        prompt = (
+            f"Write a mnemonic for the kanji {k.char} in the style of Heisig's \"Remembering the Kanji\".\n"
+            f"Keyword: {k.keyword or (k.meanings[0] if k.meanings else '?')}. "
+            f"Other meanings: {', '.join(k.meanings[:4]) or '-'}.\n"
+            f"Parts, in the order they appear, with position: {parts}.\n"
+            f"Etymology (use it if it helps, ignore if not): {k.origin or '-'}\n"
+            "Rules: at most 3 short sentences. Walk through the parts in order, naming each by its "
+            "meaning with the character in parentheses, and connect them vividly and logically so the "
+            "picture makes the keyword feel inevitable. End on the keyword. Plain text only: no title, "
+            "no quotes, no markdown, no preamble."
+        )
+        try:
+            r = self._session_factory().post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": key, "anthropic-version": "2023-06-01",
+                         "content-type": "application/json"},
+                json={"model": self.story_model, "max_tokens": 220,
+                      "messages": [{"role": "user", "content": prompt}]},
+                timeout=30)
+            if r.status_code != 200:
+                log.warning("Kanji story for %s: API HTTP %s: %s", k.char, r.status_code, r.text[:300])
+                return ""
+            text = "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
+        except Exception as e:  # noqa: BLE001
+            log.warning("Kanji story for %s failed: %s", k.char, e)
+            return ""
+        text = " ".join(split_sentences(re.sub(r"\s+", " ", text).strip())[:3])
+        log.info("Kanji story %s: %s", k.char, text)
+        self._stories[cache_key] = text
+        try:
+            self._story_path.write_text(json.dumps(self._stories, ensure_ascii=False), encoding="utf-8")
         except Exception:  # noqa: BLE001
             pass
         return text
@@ -316,8 +496,24 @@ class KanjiDB:
             k.strokes = d.get("stroke_count")
             k.grade = d.get("grade")
             k.jlpt = d.get("jlpt")
-        k.parts = [(STAND_INS.get(p, p), self._meaning_of_part(p)) for p in self._parts(ch)]
+        split = None
+        svg_text = self._kanjivg(ch)
+        if svg_text:
+            try:
+                split = self._vg_split(svg_text, ch)
+            except Exception:  # noqa: BLE001
+                log.exception("Could not read KanjiVG data for %s", ch)
+        if split:
+            vg_parts, k.svg = split
+            k.parts = [(el, self._meaning_of_part(el)) for el, _pos in vg_parts]
+            k.part_positions = [pos for _el, pos in vg_parts]
+        else:
+            k.parts = [(STAND_INS.get(p, p), self._meaning_of_part(p)) for p in self._parts(ch)]
+            k.part_positions = ["" for _ in k.parts]
+        k.part_colors = [PART_COLORS[i % len(PART_COLORS)] for i in range(len(k.parts))]
         k.origin = self._origin(ch)
+        k.origin_kind = origin_kind(k.origin)[0]
+        k.story = template_story(k)
         self._info[ch] = k
         log.debug("Kanji %s: keyword=%r meanings=%s parts=%s", ch, k.keyword, k.meanings, k.parts)
         return k
@@ -331,39 +527,62 @@ class KanjiDB:
         return out
 
 
+def render_png(k: KanjiInfo, size: int = 84) -> str:
+    """Render the colored KanjiVG drawing to a PNG for the popup (call on the UI thread)."""
+    if not k.svg:
+        return ""
+    from PySide6.QtCore import QByteArray, Qt
+    from PySide6.QtGui import QImage, QPainter
+    from PySide6.QtSvg import QSvgRenderer
+
+    d = cache_dir() / "kanji_png"
+    d.mkdir(exist_ok=True)
+    path = d / f"{ord(k.char):05x}-{size}.png"
+    renderer = QSvgRenderer(QByteArray(k.svg.encode("utf-8")))
+    img = QImage(size, size, QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(Qt.GlobalColor.transparent)
+    p = QPainter(img)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    renderer.render(p)
+    p.end()
+    img.save(str(path))
+    return str(path)
+
+
 def to_html(infos: list[KanjiInfo], accent: str) -> str:
     if not infos:
         return ""
+    from PySide6.QtCore import QUrl
+
     h = "<div style='margin-top:8px'><b>Kanji</b></div>"
     for k in infos:
         key = k.keyword or (k.meanings[0] if k.meanings else "")
-        h += (f"<div style='margin-top:4px'><span style='font-size:18pt'>{html.escape(k.char)}</span>"
-              f"&nbsp;&nbsp;<b style='color:{accent}'>{html.escape(key)}</b>")
-        tags = []
-        if k.strokes:
-            tags.append(f"{k.strokes} strokes")
-        if k.jlpt:
-            tags.append(f"JLPT N{k.jlpt}")
-        if k.grade:
-            tags.append(f"grade {k.grade}")
+        if k.image_path:
+            pic = f"<img src='{QUrl.fromLocalFile(k.image_path).toString()}' width='84' height='84'>"
+        else:
+            pic = f"<span style='font-size:40pt'>{html.escape(k.char)}</span>"
+        info = f"<b style='color:{accent};font-size:13pt'>{html.escape(key)}</b>"
+        tags = [t for t in (f"{k.strokes} strokes" if k.strokes else "",
+                            f"JLPT N{k.jlpt}" if k.jlpt else "",
+                            k.origin_kind) if t]
         if tags:
-            h += f" <span style='color:gray;font-size:9pt'>{' · '.join(tags)}</span>"
-        h += "</div>"
-        other = [m for m in k.meanings if m.lower() != key.lower()]
-        if other:
-            h += f"<div style='color:gray'>also: {html.escape(', '.join(other[:4]))}</div>"
-        rd = []
-        if k.on:
-            rd.append("on: " + "、".join(k.on))
-        if k.kun:
-            rd.append("kun: " + "、".join(k.kun))
-        if rd:
-            h += f"<div style='color:gray'>{html.escape('  ·  '.join(rd))}</div>"
+            info += f" <span style='color:gray;font-size:9pt'>{html.escape(' · '.join(tags))}</span>"
         if k.parts:
             pieces = " + ".join(
-                f"{html.escape(p)}" + (f" <i style='color:gray'>({html.escape(m)})</i>" if m else "")
-                for p, m in k.parts)
-            h += f"<div>Parts: {pieces}</div>"
-        if k.origin:
-            h += f"<div style='margin-left:8px'><b>Why:</b> {html.escape(k.origin)}</div>"
+                f"<span style='color:{k.part_colors[i] if i < len(k.part_colors) else accent}'>"
+                f"<b>{html.escape(p)}</b></span>" + (f" <i style='color:gray'>{html.escape(m)}</i>" if m else "")
+                for i, (p, m) in enumerate(k.parts))
+            info += f"<br>{pieces}"
+        rd = []
+        if k.on:
+            rd.append("on " + "、".join(k.on[:3]))
+        if k.kun:
+            rd.append("kun " + "、".join(k.kun[:3]))
+        if rd:
+            info += f"<br><span style='color:gray'>{html.escape('  ·  '.join(rd))}</span>"
+        h += (f"<table cellspacing='0' cellpadding='2' style='margin-top:4px'><tr>"
+              f"<td valign='top'>{pic}</td><td valign='top'>{info}</td></tr></table>")
+        if k.story:
+            label = "Story" if k.story_is_ai else "How it fits"
+            h += f"<div style='margin:0 0 4px 4px'><b>{label}:</b> {html.escape(k.story)}</div>"
     return h

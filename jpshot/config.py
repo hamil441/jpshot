@@ -56,6 +56,10 @@ class Config:
     # Which rows the result window shows, in order
     sections: list = field(default_factory=lambda: ["japanese"])
 
+    # Optional: Anthropic API key for short RTK-style kanji stories (also read from ANTHROPIC_API_KEY)
+    anthropic_api_key: str = ""
+    story_model: str = "claude-haiku-5-5"
+
     # Anki (via the AnkiConnect add-on)
     anki_url: str = "http://127.0.0.1:8765"
     anki_deck: str = ""

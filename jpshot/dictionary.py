@@ -65,6 +65,16 @@ class Dictionary(QObject):
                 log.exception("Kanji breakdown for %s failed", word)
                 infos = []
             self.kanji_finished.emit(req_id, infos)
+            # second pass: AI stories (only with an API key), then update the popup again
+            changed = False
+            for k in infos:
+                if not k.story_is_ai:
+                    story = self.kanji.story(k)
+                    if story:
+                        k.story, k.story_is_ai = story, True
+                        changed = True
+            if changed:
+                self.kanji_finished.emit(req_id, infos)
 
         self._exec.submit(job)
 

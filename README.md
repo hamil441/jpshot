@@ -4,7 +4,7 @@ A Flameshot-style screenshot tool for learning Japanese. Press the hotkey, drag 
 
 - **English**, **日本語** (original), **Furigana** (readings drawn above the kanji), **ひらがな** and **Rōmaji** — click one in the row at the top to show just that box, or Ctrl+click to show several at once. Everything is selectable and copyable.
 - **Select to translate** — highlight part of any row and just that part is translated in a bar at the top.
-- **Dictionary popup** — hold **Shift** and hover a Japanese word: reading, rōmaji, dictionary form, meanings, its grammatical role, and a **kanji breakdown** (RTK keyword, meanings, readings, component parts with their meanings, and *why* those parts make the character — sound + meaning, combined meanings, or a picture — in the spirit of *Remembering the Kanji*).
+- **Dictionary popup** — hold **Shift** and hover a Japanese word: reading, rōmaji, dictionary form, meanings, its grammatical role, and a **kanji breakdown** in the spirit of *Remembering the Kanji*: the kanji drawn with each part in its own color, the RTK keyword, the parts and their meanings in matching colors, readings, and a short (≤3 sentence) explanation of how the parts make the meaning.
 - **Grammar mode** — colors every word by part of speech; hovering any word (no Shift needed) explains particles, auxiliaries, conjugation type and form, and what a whole verb phrase means (e.g. 勉強しています → present · ongoing · polite).
 - **Read in Japanese** — neural text-to-speech with a **speed slider** (0.5× – 2×) always visible at the bottom.
 - **⛏ Mine** — make an Anki card from the capture: screenshot (plus more screenshots, image files or a pasted image), every version of the text, the word you looked up and its meaning, and the Japanese audio.
@@ -79,7 +79,9 @@ The result window stays open while you take the next capture and simply updates;
 
 Grammar colors: blue = noun, red = verb, orange = adjective, purple = adverb, green = particle, pink = auxiliary (tense, politeness, negation…).
 
-The first kanji breakdown downloads the KRADFILE component data (about 100 KB, EDRDG, CC BY-SA) into `~/.cache/jpshot/`; kanji meanings and RTK keywords come from kanjiapi.dev, and the "why" explanations from Wiktionary's glyph-origin notes; all are cached.
+**Kanji stories.** Add an Anthropic API key in ⚙ Settings (or set `ANTHROPIC_API_KEY`) and each kanji gets a short, vivid Remembering-the-Kanji-style story written for it, once, then saved. Without a key you get a description of how the parts are laid out (e.g. *Cliff (厂) draped over the top-left, grove (林) on top and day (日) at the bottom → calendar.*) plus where the character comes from.
+
+The colored drawings use KanjiVG stroke data (CC BY-SA 3.0, downloaded per kanji). The first kanji breakdown downloads the KRADFILE component data (about 100 KB, EDRDG, CC BY-SA) into `~/.cache/jpshot/`; kanji meanings and RTK keywords come from kanjiapi.dev, and the "why" explanations from Wiktionary's glyph-origin notes; all are cached.
 
 ## Anki mining
 
@@ -108,6 +110,8 @@ Use **⚙ Settings** in the window (or `jpshot settings`). Changes apply immedia
 | `theme` | `system` | `light`, `dark` or follow the system |
 | `sections` | `["japanese"]` | which boxes are shown |
 | `grammar_mode` | `false` | |
+| `anthropic_api_key` | `""` | optional, for kanji stories |
+| `story_model` | `claude-haiku-5-5` | model used for kanji stories |
 | `japanese_font_size` / `english_font_size` | `20` / `13` | |
 
 ### Going offline (optional)
