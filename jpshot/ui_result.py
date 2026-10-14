@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 
 from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import (QClipboard, QColor, QCursor, QFont, QGuiApplication, QKeySequence,
@@ -62,6 +63,17 @@ def copy_text(text: str) -> None:
 def copy_image(pm: QPixmap) -> None:
     QGuiApplication.clipboard().setPixmap(pm, QClipboard.Mode.Clipboard)
     log.info("Copied image to clipboard (%dx%d)", pm.width(), pm.height())
+
+
+def english_spans(text: str) -> list:
+    """Word spans for the English row, so Shift-hover can look English words up."""
+    spans = []
+    for m in re.finditer(r"[A-Za-z][A-Za-z'’-]*[A-Za-z]|[A-Za-z]", text):
+        w = m.group()
+        start = japanese.u16len(text[:m.start()])
+        tok = japanese.Token(w, "", w.lower(), w.lower(), "english", True)
+        spans.append(japanese.Span(start, start + japanese.u16len(w), tok))
+    return spans
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +151,7 @@ class WordView(QTextEdit):
         a, b = c.selectionStart(), c.selectionEnd()
         if a == b:
             return ""
-        if not self.spans:
+        if not self.spans or self.spans[0].token.pos == "english":
             return c.selectedText().replace("\u2029", "\n")
         out = []
         for sp in self.spans:
@@ -249,6 +261,8 @@ class DictionaryPopup(QFrame):
         lay.addWidget(self.label)
 
     def _head(self, tok) -> str:
+        if tok.pos == "english":
+            return f"<span style='font-size:20pt'><b>{html.escape(tok.surface)}</b></span>"
         h = (f"<a href='play' style='text-decoration:none'>🔊</a>&nbsp;"
              f"<span style='font-size:20pt'><b>{html.escape(tok.surface)}</b></span>")
         if tok.reading and tok.reading != tok.surface:
@@ -373,12 +387,14 @@ class ResultWindow(QWidget):
         root.addWidget(self._build_audio())
         root.addLayout(foot)
 
+        self.sections["english"].view.set_content = self._english_setter(self.sections["english"].view)
         self._apply_section_visibility()
         self._apply_color_mode()
         self._update_image_visibility()
         dictionary.finished.connect(self._lookup_done)
         dictionary.kanji_finished.connect(self._kanji_done)
         dictionary.difficulty_finished.connect(self._difficulty_done)
+        dictionary.english_finished.connect(self._english_done)
         speaker.state_changed.connect(self._speaker_state)
         QApplication.instance().installEventFilter(self)
 
@@ -692,6 +708,15 @@ class ResultWindow(QWidget):
         self.raise_()
         self.activateWindow()
 
+    def _english_setter(self, view):
+        """English text gets word spans (for lookups) unless it's a status message."""
+        base = WordView.set_content.__get__(view)
+
+        def setter(text: str, spans=None):
+            is_message = text.startswith(("Translating", "(Translation failed"))
+            base(text, None if is_message else english_spans(text))
+        return setter
+
     def _set_ja_badges(self, text: str):
         for k in RENDER_MODE:
             self.sections[k].badge.setText(text)
@@ -758,6 +783,57 @@ class ResultWindow(QWidget):
 
     # -- dictionary -------------------------------------------------------
     def _lookup(self, tok, rect: QRect):
+        if tok.pos == "english":
+            self._lookup_english(tok, rect)
+            return
+        self._lookup_japanese(tok, rect)
+
+    def _lookup_english(self, tok, rect: QRect):
+        for sec in self.sections.values():
+            if sec.view is not self.sender():
+                sec.view.clear_hover()
+        self._lookup_req += 1
+        self._lookup_ctx = {"id": self._lookup_req, "tok": tok, "rect": rect, "gram": "",
+                            "extra": "<div style='color:gray'>Finding the Japanese word…</div>",
+                            "entries": None, "error": "", "kanji": "", "loading": True,
+                            "english": tok.surface}
+        self._render_popup()
+        self.dictionary.lookup_english(self._lookup_req, tok.surface, self.cfg.translator)
+
+    def _english_done(self, req_id, word, entries, error):
+        c = self._lookup_ctx
+        if not c or req_id != c["id"]:
+            return
+        if error or not entries:
+            c.update(entries=[], error=error, loading=False,
+                     extra=f"<div style='color:gray'>No Japanese word found for “{html.escape(word)}”.</div>")
+            self._render_popup()
+            return
+        e = entries[0]
+        try:
+            toks = [t for line in japanese.tokenize(e.word) for t in line if t.surface.strip()]
+        except Exception:  # noqa: BLE001
+            toks = []
+        if len(toks) == 1:
+            jt = toks[0]
+        else:
+            jt = japanese.Token(e.word, "", e.word, e.word, toks[0].pos if toks else "名詞", True)
+        if e.reading and (japanese.has_kanji(jt.surface) or not jt.reading):
+            jt.reading = japanese.kata_to_hira(e.reading)
+        extra = f"<div style='color:gray'>“{html.escape(word)}” in Japanese:</div>" + pitch.pattern_html(jt)
+        others = [x.word + (f" ({x.reading})" if x.reading and x.reading != x.word else "") for x in entries[1:4]]
+        if others:
+            extra += f"<div style='color:gray;font-size:9pt'>also: {html.escape('、'.join(others))}</div>"
+        try:
+            gram = grammar.to_html(grammar.describe([[jt]], jt))
+        except Exception:  # noqa: BLE001
+            gram = ""
+        c.update(tok=jt, gram=gram, extra=extra, entries=entries[:1], error="", loading=False)
+        self._render_popup()
+        if any(kanji.is_kanji(ch) for ch in jt.surface):
+            self.dictionary.lookup_kanji(req_id, jt.surface, [e.word])
+
+    def _lookup_japanese(self, tok, rect: QRect):
         for sec in self.sections.values():
             if sec.view is not self.sender():
                 sec.view.clear_hover()

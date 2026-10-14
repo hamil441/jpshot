@@ -34,6 +34,8 @@ class Dictionary(QObject):
     kanji_finished = Signal(int, object)
     # request id, difficulty.Difficulty or None
     difficulty_finished = Signal(int, object)
+    # request id, English word, list[Entry] (Japanese words meaning it), error message
+    english_finished = Signal(int, str, object, str)
 
     def __init__(self, backend: str = "auto"):
         super().__init__()
@@ -85,6 +87,58 @@ class Dictionary(QObject):
                 self.finished.emit(req_id, "", [], f"{type(e).__name__}: {e}")
 
         self._exec.submit(job)
+
+    def lookup_english(self, req_id: int, word: str, translator: str = "google") -> None:
+        """Japanese words for an English word: jisho.org English search, else translate then look up."""
+        def job():
+            entries, error = [], ""
+            try:
+                entries = self._jisho_english(word)
+            except Exception as e:  # noqa: BLE001
+                log.warning("English search for %r failed: %s", word, e)
+            if not entries:
+                try:
+                    from .translate import translate
+
+                    jp = translate(word, "en", "ja", translator).strip("。.、 ")
+                    log.info("English %r -> %r (translated)", word, jp)
+                    entries = self._lookup_one(jp) if jp else []
+                except Exception as e:  # noqa: BLE001
+                    error = f"{type(e).__name__}: {e}"
+            for e in entries:
+                self._cache.setdefault(e.word, [e])
+            log.info("English %r -> %s", word, ", ".join(e.word for e in entries[:3]) or "nothing")
+            self.english_finished.emit(req_id, word, entries, error)
+
+        self._exec.submit(job)
+
+    def _jisho_english(self, word: str) -> list[Entry]:
+        r = self._http().get("https://jisho.org/api/v1/search/words", params={"keyword": word}, timeout=8)
+        r.raise_for_status()
+        data = r.json().get("data", [])
+        w = word.lower()
+
+        def gloss_match(d):
+            for s in d.get("senses", []):
+                for g in s.get("english_definitions", []):
+                    g = g.lower()
+                    if g.startswith("to "):
+                        g = g[3:]
+                    if g == w or g.startswith(w + " ") or g.startswith(w + ";"):
+                        return True
+            return False
+
+        exact = [d for d in data if gloss_match(d)]
+        chosen = sorted(exact, key=lambda d: not d.get("is_common"))[:4] or data[:3]
+        return [self._jisho_entry(d, word) for d in chosen]
+
+    def _jisho_entry(self, d: dict, q: str) -> Entry:
+        j = (d.get("japanese") or [{}])[0]
+        senses = [Sense(s.get("english_definitions", []), s.get("parts_of_speech", []))
+                  for s in d.get("senses", [])[:5] if s.get("english_definitions")]
+        levels = [int(x[-1]) for x in d.get("jlpt", []) if x[-1:].isdigit()]
+        return Entry(word=j.get("word") or j.get("reading", q), reading=j.get("reading", ""), senses=senses,
+                     common=bool(d.get("is_common")), jlpt=max(levels) if levels else None)
 
     def estimate_difficulty(self, req_id: int, lines) -> None:
         from .difficulty import estimate

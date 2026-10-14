@@ -71,6 +71,7 @@ Default hotkey: **Ctrl+Alt+J**. Left-clicking the tray icon also starts a captur
 | Result | Ctrl+click a box name | show several boxes at once |
 | Result | select text in any row | translate just that part |
 | Result | Shift + hover a Japanese word (key changeable in Settings) | dictionary, grammar and kanji popup |
+| Result | Shift + hover an English word | the Japanese word for it, with the same popup (plus alternatives) |
 | Result | Grammar / Pitch / Difficulty (Alt+G / Alt+P / Alt+D) | color words by that scheme; click again to turn off |
 | Result | W, or 🔊 in the popup | hear the word under the popup |
 | Result | 🖼 or Ctrl+I | show/hide the screenshot panel (scroll = zoom, drag = move, double-click = fit) |
