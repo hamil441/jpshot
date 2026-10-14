@@ -460,7 +460,8 @@ class ResultWindow(QWidget):
         # the English box is editable: clicking a Japanese box (or Ctrl+Enter) re-translates it
         en_view.setReadOnly(False)
         en_view.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
-        en_view.setToolTip("Edit the English — click a Japanese box (or press Ctrl+Enter) to update them")
+        en_view.setToolTip("Edit the English — press Ctrl+Enter, or switch to / click a Japanese box, "
+                           "to update the Japanese")
         self._en_dirty = False
         self._en_programmatic = False
         en_view.textChanged.connect(self._english_edited)
@@ -803,6 +804,9 @@ class ResultWindow(QWidget):
         self._apply_section_visibility()
         self._hide_popup()
         log.debug("Boxes shown: %s", self.cfg.sections)
+        # switching to a Japanese box after editing the English re-translates it
+        if key in RENDER_MODE and getattr(self, "_en_dirty", False):
+            self._apply_english_edit()
 
     # -- showing a new capture -------------------------------------------
     def show_result(self, res: OcrResult, anchor: QRect, pixmap: QPixmap | None = None):
@@ -874,7 +878,7 @@ class ResultWindow(QWidget):
         en = self.sections["english"]
         if not self._en_dirty:
             self._en_dirty = True
-            en.badge.setText("edited — click a Japanese box to update")
+            en.badge.setText("edited — press Ctrl+Enter or switch to a Japanese box to update")
         en.view.spans = []          # word positions are stale until re-applied
 
     def _apply_english_edit(self):
