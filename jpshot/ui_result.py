@@ -361,9 +361,10 @@ class ResultWindow(QWidget):
             b.setObjectName("chip")
             b.setText(SECTION_TITLES[key])
             b.setCheckable(True)
-            b.setToolTip(f"Show/hide {SECTION_TITLES[key]}  (Alt+{i + 1})")
+            b.setToolTip(f"Show {SECTION_TITLES[key]}  (Alt+{i + 1})\n"
+                         "Ctrl+click to show several boxes at once")
             b.setShortcut(QKeySequence(f"Alt+{i + 1}"))
-            b.toggled.connect(lambda on, k=key: self._section_toggled(k, on))
+            b.clicked.connect(lambda _=False, k=key: self._chip_clicked(k))
             self.chips[key] = b
             bar.addWidget(b)
         sep = QFrame()
@@ -504,12 +505,19 @@ class ResultWindow(QWidget):
             chip.blockSignals(False)
             self.sections[key].setVisible(key in shown)
 
-    def _section_toggled(self, key: str, on: bool):
-        self.sections[key].setVisible(on)
-        self.cfg.sections = [k for k in ALL_SECTIONS if self.chips[k].isChecked()]
+    def _chip_clicked(self, key: str):
+        """Click: show only this box. Ctrl/Shift+click: add or remove it from what's shown."""
+        mods = QApplication.keyboardModifiers()
+        multi = mods & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+        if multi:
+            shown = [k for k in ALL_SECTIONS if self.chips[k].isChecked()]
+        else:
+            shown = [key]
+        self.cfg.sections = shown or [key]
         self.cfg.save()
+        self._apply_section_visibility()
         self._hide_popup()
-        log.debug("Sections shown: %s", self.cfg.sections)
+        log.debug("Boxes shown: %s", self.cfg.sections)
 
     # -- showing a new capture -------------------------------------------
     def show_result(self, res: OcrResult, anchor: QRect, pixmap: QPixmap | None = None):

@@ -12,6 +12,7 @@ import html
 import json
 import logging
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -95,11 +96,51 @@ class KanjiInfo:
     grade: int | None = None
     jlpt: int | None = None
     parts: list[tuple[str, str]] = field(default_factory=list)  # (component, meaning)
+    origin: str = ""             # why the parts make this character (Wiktionary glyph origin)
 
 
 def is_kanji(c: str) -> bool:
     return ("㐀" <= c <= "鿿" or "豈" <= c <= "﫿"
             or "\U00020000" <= c <= "\U0003134f" or c in "々〆")
+
+
+# Plain-language explanation of each kind of character formation, shown before the details.
+ORIGIN_KINDS = [
+    ("phono-semantic compound", "Sound + meaning: one part hints at the meaning, the other at the "
+                                "pronunciation"),
+    ("ideogrammatic compound", "Meaning combination: the parts' meanings combine into the idea"),
+    ("compound ideogram", "Meaning combination: the parts' meanings combine into the idea"),
+    ("pictogram", "Picture: it started as a drawing of the thing"),
+    ("simple ideogram", "Symbol: an abstract sign for the idea"),
+    ("ideogram", "Symbol: an abstract sign for the idea"),
+    ("shinjitai", "Simplified Japanese form of an older character"),
+    ("simplified from", "Simplified form of an older character"),
+    ("variant of", "A variant of another character"),
+]
+
+
+def clean_origin_html(h: str) -> str:
+    """Wiktionary 'Glyph origin' section HTML -> short learner-friendly text."""
+    h = re.sub(r"(?is)<(style|script|table|sup|h[1-6])\b.*?</\1>", " ", h)
+    h = re.sub(r"(?is)<div[^>]*(?:mw-collapsible|thumb|gallery|NavFrame)[^>]*>.*?</div>", " ", h)
+    h = re.sub(r"(?is)<ol class=\"references\".*?</ol>", " ", h)
+    t = html.unescape(re.sub(r"<[^>]+>", " ", h))
+    t = re.sub(r"\[\s*edit\s*\]|\[\d+\]", " ", t)
+    # drop Old/Middle Chinese reconstructions and bare CJK-only parentheticals
+    t = re.sub(r"\([^()]*\b(?:OC|MC|Baxter|Zhengzhang)\b[^()]*\)", "", t)
+    t = re.sub(r"\(\s*[\u3000-\u30ff\u3400-\u9fff／/,，、\s]*\)", "", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    t = re.sub(r"\s+([,.;:)])", r"\1", t).replace("( ", "(")
+    # keep the first two sentences
+    sentences = re.split(r"(?<=[.!?])\s+", t)
+    t = " ".join(sentences[:2])
+    if len(t) > 360:
+        t = t[:357].rsplit(" ", 1)[0] + "…"
+    low = t.lower()
+    for key, plain in ORIGIN_KINDS:
+        if key in low:
+            return f"{plain}. {t}"
+    return t
 
 
 def cache_dir() -> Path:
@@ -130,6 +171,39 @@ class KanjiDB:
         except Exception:  # noqa: BLE001
             self._api_cache = {}
         self._jam = None
+        self._origin_path = cache_dir() / "origins.json"
+        try:
+            self._origins: dict[str, str] = json.loads(self._origin_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            self._origins = {}
+
+    # -- glyph origin (why the parts fit) ------------------------------------
+    def _origin(self, ch: str) -> str:
+        if ch in self._origins:
+            return self._origins[ch]
+        api = "https://en.wiktionary.org/w/api.php"
+        text = ""
+        try:
+            sess = self._session_factory()
+            r = sess.get(api, params={"action": "parse", "page": ch, "prop": "sections",
+                                      "format": "json", "formatversion": "2"}, timeout=8)
+            secs = r.json().get("parse", {}).get("sections", [])
+            idx = next((s["index"] for s in secs if s.get("line", "").strip().lower() == "glyph origin"), None)
+            if idx is not None:
+                r = sess.get(api, params={"action": "parse", "page": ch, "section": idx, "prop": "text",
+                                          "format": "json", "formatversion": "2",
+                                          "disableeditsection": "1"}, timeout=8)
+                text = clean_origin_html(r.json().get("parse", {}).get("text", ""))
+            log.debug("Glyph origin %s: %s", ch, text or "(none)")
+        except Exception as e:  # noqa: BLE001
+            log.warning("Wiktionary glyph origin for %s failed: %s", ch, e)
+            return ""   # don't cache failures
+        self._origins[ch] = text
+        try:
+            self._origin_path.write_text(json.dumps(self._origins, ensure_ascii=False), encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+        return text
 
     # -- components -------------------------------------------------------
     def _load_krad(self) -> dict[str, list[str]]:
@@ -243,6 +317,7 @@ class KanjiDB:
             k.grade = d.get("grade")
             k.jlpt = d.get("jlpt")
         k.parts = [(STAND_INS.get(p, p), self._meaning_of_part(p)) for p in self._parts(ch)]
+        k.origin = self._origin(ch)
         self._info[ch] = k
         log.debug("Kanji %s: keyword=%r meanings=%s parts=%s", ch, k.keyword, k.meanings, k.parts)
         return k
@@ -289,4 +364,6 @@ def to_html(infos: list[KanjiInfo], accent: str) -> str:
                 f"{html.escape(p)}" + (f" <i style='color:gray'>({html.escape(m)})</i>" if m else "")
                 for p, m in k.parts)
             h += f"<div>Parts: {pieces}</div>"
+        if k.origin:
+            h += f"<div style='margin-left:8px'><b>Why:</b> {html.escape(k.origin)}</div>"
     return h

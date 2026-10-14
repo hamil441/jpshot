@@ -2,9 +2,9 @@
 
 A Flameshot-style screenshot tool for learning Japanese. Press the hotkey, drag around any text on screen, and if JPShot finds English or Japanese text it opens a study window with every version of the text stacked together:
 
-- **English**, **日本語** (original), **Furigana** (readings drawn above the kanji), **ひらがな** and **Rōmaji** — a row of toggles at the top chooses which are shown. Everything is selectable and copyable.
+- **English**, **日本語** (original), **Furigana** (readings drawn above the kanji), **ひらがな** and **Rōmaji** — click one in the row at the top to show just that box, or Ctrl+click to show several at once. Everything is selectable and copyable.
 - **Select to translate** — highlight part of any row and just that part is translated in a bar at the top.
-- **Dictionary popup** — hold **Shift** and hover a Japanese word: reading, rōmaji, dictionary form, meanings, its grammatical role, and a **kanji breakdown** (RTK keyword, meanings, readings, and component parts with their meanings, in the spirit of *Remembering the Kanji*).
+- **Dictionary popup** — hold **Shift** and hover a Japanese word: reading, rōmaji, dictionary form, meanings, its grammatical role, and a **kanji breakdown** (RTK keyword, meanings, readings, component parts with their meanings, and *why* those parts make the character — sound + meaning, combined meanings, or a picture — in the spirit of *Remembering the Kanji*).
 - **Grammar mode** — colors every word by part of speech; hovering any word (no Shift needed) explains particles, auxiliaries, conjugation type and form, and what a whole verb phrase means (e.g. 勉強しています → present · ongoing · polite).
 - **Read in Japanese** — neural text-to-speech with a **speed slider** (0.5× – 2×) always visible at the bottom.
 - **⛏ Mine** — make an Anki card from the capture: screenshot (plus more screenshots, image files or a pasted image), every version of the text, the word you looked up and its meaning, and the Japanese audio.
@@ -63,7 +63,8 @@ Default hotkey: **Ctrl+Alt+J**. Left-clicking the tray icon also starts a captur
 |---|---|---|
 | Capture | drag | select a region |
 | Capture | Esc / right-click | cancel |
-| Result | toggles in the top row, or Alt+1 … Alt+5 | show/hide English, 日本語, Furigana, ひらがな, Rōmaji |
+| Result | click a box name in the top row, or Alt+1 … Alt+5 | show only that box (English, 日本語, Furigana, ひらがな, Rōmaji) |
+| Result | Ctrl+click a box name | show several boxes at once |
 | Result | select text in any row | translate just that part |
 | Result | Shift + hover a Japanese word | dictionary, grammar and kanji popup |
 | Result | Grammar toggle, or Alt+G | color words by part of speech; plain hover explains them |
@@ -78,7 +79,7 @@ The result window stays open while you take the next capture and simply updates;
 
 Grammar colors: blue = noun, red = verb, orange = adjective, purple = adverb, green = particle, pink = auxiliary (tense, politeness, negation…).
 
-The first kanji breakdown downloads the KRADFILE component data (about 100 KB, EDRDG, CC BY-SA) into `~/.cache/jpshot/`; kanji meanings and RTK keywords come from kanjiapi.dev and are cached too.
+The first kanji breakdown downloads the KRADFILE component data (about 100 KB, EDRDG, CC BY-SA) into `~/.cache/jpshot/`; kanji meanings and RTK keywords come from kanjiapi.dev, and the "why" explanations from Wiktionary's glyph-origin notes; all are cached.
 
 ## Anki mining
 
@@ -103,7 +104,7 @@ Use **⚙ Settings** in the window (or `jpshot settings`). Changes apply immedia
 | `tts_voice` | `ja-JP-NanamiNeural` | or `ja-JP-KeitaNeural` (male) |
 | `dictionary` | `auto` | offline JMdict if installed, else jisho.org; or force `jamdict` / `jisho` |
 | `theme` | `system` | `light`, `dark` or follow the system |
-| `sections` | all five | which rows to show |
+| `sections` | `["japanese"]` | which boxes are shown |
 | `grammar_mode` | `false` | |
 | `japanese_font_size` / `english_font_size` | `20` / `13` | |
 

@@ -54,7 +54,7 @@ class Config:
     japanese_font_size: int = 20
     english_font_size: int = 13
     # Which rows the result window shows, in order
-    sections: list = field(default_factory=lambda: list(ALL_SECTIONS))
+    sections: list = field(default_factory=lambda: ["japanese"])
 
     # Anki (via the AnkiConnect add-on)
     anki_url: str = "http://127.0.0.1:8765"
