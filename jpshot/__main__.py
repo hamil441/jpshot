@@ -2,6 +2,7 @@
 
     python -m jpshot              start JPShot (tray + hotkey), logs to this terminal
     python -m jpshot capture      start a capture (in the running instance, or start one)
+    python -m jpshot open         open the window with your last capture (empty if there's none)
     python -m jpshot file IMG     run the OCR/translate window on an image file
     python -m jpshot ocr IMG      terminal only: print OCR text, language and translation
     python -m jpshot check        check that every dependency is installed and working
@@ -116,7 +117,7 @@ def cmd_ocr(cfg: Config, path: str) -> int:
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="jpshot", description="Screenshot → OCR → English/Japanese study popup")
     p.add_argument("command", nargs="?", default="run",
-                   choices=["run", "capture", "file", "ocr", "check", "quit", "show", "settings", "history"])
+                   choices=["run", "capture", "open", "file", "ocr", "check", "quit", "show", "settings", "history"])
     p.add_argument("image", nargs="?", help="image path for `file` / `ocr`")
     p.add_argument("--debug", "-d", action="store_true", help="verbose debug logging")
     p.add_argument("--setup-offline", action="store_true", help="install Argos offline translation models")
@@ -154,9 +155,9 @@ def main(argv=None) -> int:
 
     from .app import JPShotApp, make_icon, send_to_running
 
-    if args.command in ("capture", "quit", "show", "settings", "history") and send_to_running(args.command):
+    if args.command in ("capture", "open", "quit", "show", "settings", "history") and send_to_running(args.command):
         return 0
-    if args.command in ("quit", "show"):
+    if args.command == "quit":
         log.info("JPShot is not running")
         return 1
     if args.command == "run" and send_to_running("noop"):
@@ -177,6 +178,8 @@ def main(argv=None) -> int:
 
     if args.command == "capture":
         QTimer.singleShot(400, jp.start_capture)
+    elif args.command in ("open", "show"):
+        QTimer.singleShot(200, jp.open_window)
     elif args.command == "settings":
         QTimer.singleShot(100, jp.open_settings)
     elif args.command == "history":

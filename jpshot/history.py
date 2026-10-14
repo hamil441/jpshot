@@ -60,6 +60,32 @@ class History:
             f.write(json.dumps(asdict(cap), ensure_ascii=False) + "\n")
         log.info("Saved capture %s to history", cap.id)
 
+    # -- the last capture (always kept, even with History switched off) ----------
+    def save_last(self, cap: Capture, pixmap: QPixmap | None) -> None:
+        try:
+            img = ""
+            if pixmap is not None and not pixmap.isNull():
+                img = "last.png"
+                pixmap.save(str(self.dir / img), "PNG")
+            d = asdict(cap)
+            d["image"] = img
+            (self.dir / "last.json").write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+            log.debug("Saved last capture %s", cap.id)
+        except Exception:  # noqa: BLE001
+            log.exception("Could not save the last capture")
+
+    def last(self) -> tuple[Capture, QPixmap | None] | None:
+        """The most recent capture (last.json, else the newest history entry), or None."""
+        p = self.dir / "last.json"
+        if p.exists():
+            try:
+                cap = Capture(**json.loads(p.read_text(encoding="utf-8")))
+                return cap, self.pixmap(cap)
+            except Exception:  # noqa: BLE001
+                log.warning("last.json is unreadable; ignoring it")
+        caps = self.all()
+        return (caps[0], self.pixmap(caps[0])) if caps else None
+
     def all(self) -> list[Capture]:
         out = []
         if self.index.exists():

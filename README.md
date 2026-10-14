@@ -73,6 +73,7 @@ This tests Qt, Tesseract (with jpn + eng), the Japanese tokenizer, translation, 
 jpshot                 # start (tray icon + global hotkey), logs here; Ctrl+C to quit
 jpshot --debug         # same, with verbose debug logs
 jpshot capture         # take a capture now (sends it to the running instance, or starts one)
+jpshot open            # open the window with your last capture (an empty window if there is none)
 jpshot file shot.png   # open the result window for an existing image
 jpshot ocr shot.png    # terminal only: prints OCR text, translation, furigana and hiragana
 jpshot settings        # open the settings window
@@ -81,7 +82,8 @@ jpshot quit            # stop the running instance
 
 Without installing, replace `jpshot` with `python -m jpshot`.
 
-Default hotkey: **Ctrl+Alt+J**. Left-clicking the tray icon also starts a capture.
+Default hotkey: **Ctrl+Alt+J**. By default the hotkey **opens the JPShot window** showing your last capture (kept between restarts; an empty window if you haven't captured anything yet). Click **📷 New screenshot** (or press Ctrl+N) in the window to take another one. The window stays open while you select.
+Want the hotkey to grab a screenshot straight away instead? ⚙ Settings → Capture → *Hotkey does* → *Take a new screenshot*. You can also set a second *Screenshot hotkey* so you have one key for each. Left-clicking the tray icon opens the window.
 
 ## Using it
 

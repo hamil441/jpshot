@@ -51,6 +51,16 @@ class SettingsDialog(QDialog):
         self.hotkey.setPlaceholderText("empty = no hotkey (bind `jpshot capture` in your WM)")
         self.hotkey.setToolTip("pynput syntax, e.g. <shift>+<print_screen>, <ctrl>+<alt>+j")
         f.addRow("Global hotkey", self.hotkey)
+        self.hotkey_action = QComboBox()
+        self.hotkey_action.addItem("Open the JPShot window (last capture)", "open")
+        self.hotkey_action.addItem("Take a new screenshot", "capture")
+        self.hotkey_action.setCurrentIndex(max(0, self.hotkey_action.findData(cfg.hotkey_action)))
+        self.hotkey_action.setToolTip("`jpshot open` and `jpshot capture` do the same from a WM key binding")
+        f.addRow("Hotkey does", self.hotkey_action)
+        self.capture_hotkey = QLineEdit(cfg.capture_hotkey)
+        self.capture_hotkey.setPlaceholderText("optional, e.g. <ctrl>+<print_screen>")
+        self.capture_hotkey.setToolTip("A second hotkey that always takes a new screenshot")
+        f.addRow("Screenshot hotkey", self.capture_hotkey)
         self.tesseract = QLineEdit(cfg.tesseract_cmd)
         self.tesseract.setPlaceholderText("auto-detect")
         f.addRow("Tesseract path", self.tesseract)
@@ -304,6 +314,8 @@ class SettingsDialog(QDialog):
     def _apply(self):
         c = self.cfg
         c.hotkey = self.hotkey.text().strip()
+        c.hotkey_action = self.hotkey_action.currentData() or "open"
+        c.capture_hotkey = self.capture_hotkey.text().strip()
         c.tesseract_cmd = self.tesseract.text().strip()
         c.ocr_min_confidence = self.min_conf.value()
         c.translator = self.translator.currentData()

@@ -28,6 +28,11 @@ class Config:
     # Global hotkey (pynput syntax). Set to "" to disable and bind
     # `python -m jpshot capture` in your OS shortcut settings instead.
     hotkey: str = "<ctrl>+<alt>+j"
+    # What the hotkey does: "open" = open the JPShot window with your last capture
+    # (take a new one with its 📷 button), "capture" = start a new screenshot right away.
+    hotkey_action: str = "open"
+    # Optional second hotkey that always starts a capture ("" = none).
+    capture_hotkey: str = ""
 
     # OCR
     tesseract_cmd: str = ""          # full path if tesseract isn't on PATH

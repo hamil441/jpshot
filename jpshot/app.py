@@ -58,6 +58,7 @@ def send_to_running(command: str) -> bool:
 
 class JPShotApp(QObject):
     capture_requested = Signal()
+    open_requested = Signal()
 
     def __init__(self, cfg):
         super().__init__()
@@ -79,12 +80,14 @@ class JPShotApp(QObject):
         self.result.settings_requested.connect(self.open_settings)
         self.result.theme_toggled.connect(self.toggle_theme)
         self.result.mine_requested.connect(self.open_mine)
+        self.result.capture_requested.connect(self.start_capture)
         self.mine_dialog = None
         self._capture_callback = None
         self.settings_dialog: SettingsDialog | None = None
         self.hotkey_listener = None
 
         self.capture_requested.connect(self.start_capture, Qt.ConnectionType.QueuedConnection)
+        self.open_requested.connect(self.open_window, Qt.ConnectionType.QueuedConnection)
         self._setup_server()
         self._setup_tray()
         self._setup_hotkey()
@@ -117,9 +120,8 @@ class JPShotApp(QObject):
             log.info("Received command %r", cmd)
             if cmd == "capture":
                 self.capture_requested.emit()
-            elif cmd == "show" and self.had_result:
-                self.result.show()
-                self.result.raise_()
+            elif cmd in ("open", "show"):
+                self.open_requested.emit()
             elif cmd == "settings":
                 self.open_settings()
             elif cmd == "history":
@@ -137,11 +139,11 @@ class JPShotApp(QObject):
         hk = self.cfg.hotkey or "no hotkey"
         self.tray.setToolTip(f"JPShot — {hk}")
         menu = QMenu()
-        a = QAction(f"Capture  ({hk})", menu)
-        a.triggered.connect(self.capture_requested.emit)
+        a = QAction("Open JPShot (last capture)", menu)
+        a.triggered.connect(self.open_requested.emit)
         menu.addAction(a)
-        a = QAction("Show last result", menu)
-        a.triggered.connect(lambda: self.had_result and (self.result.show(), self.result.raise_()))
+        a = QAction("New screenshot", menu)
+        a.triggered.connect(self.capture_requested.emit)
         menu.addAction(a)
         a = QAction("Settings…", menu)
         a.triggered.connect(self.open_settings)
@@ -152,7 +154,7 @@ class JPShotApp(QObject):
         menu.addAction(a)
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(
-            lambda r: r == QSystemTrayIcon.ActivationReason.Trigger and self.capture_requested.emit())
+            lambda r: r == QSystemTrayIcon.ActivationReason.Trigger and self.open_requested.emit())
         self.tray.show()
         self._menu = menu
 
@@ -160,7 +162,7 @@ class JPShotApp(QObject):
         if self.hotkey_listener:
             self.hotkey_listener.stop()
             self.hotkey_listener = None
-        if not self.cfg.hotkey:
+        if not self.cfg.hotkey and not self.cfg.capture_hotkey:
             log.info("Global hotkey disabled in config")
             return
         if sys.platform.startswith("linux") and os.environ.get("XDG_SESSION_TYPE") == "wayland":
@@ -170,14 +172,26 @@ class JPShotApp(QObject):
             from pynput import keyboard
 
             def fire():
-                log.debug("Hotkey %s pressed", self.cfg.hotkey)
-                self.capture_requested.emit()  # thread-safe: queued to the UI thread
+                log.debug("Hotkey %s pressed (%s)", self.cfg.hotkey, self.cfg.hotkey_action)
+                # signals are thread-safe: queued to the UI thread
+                (self.capture_requested if self.cfg.hotkey_action == "capture" else self.open_requested).emit()
 
-            self.hotkey_listener = keyboard.GlobalHotKeys({self.cfg.hotkey: fire})
+            def fire_capture():
+                log.debug("Screenshot hotkey %s pressed", self.cfg.capture_hotkey)
+                self.capture_requested.emit()
+
+            keys = {}
+            if self.cfg.hotkey:
+                keys[self.cfg.hotkey] = fire
+            if self.cfg.capture_hotkey and self.cfg.capture_hotkey != self.cfg.hotkey:
+                keys[self.cfg.capture_hotkey] = fire_capture
+            self.hotkey_listener = keyboard.GlobalHotKeys(keys)
             self.hotkey_listener.daemon = True
             self.hotkey_listener.start()
-            log.info("Global hotkey registered: %s", self.cfg.hotkey)
-            self._active_hotkey = self.cfg.hotkey
+            log.info("Global hotkey registered: %s → %s%s", self.cfg.hotkey or "(none)",
+                     "new screenshot" if self.cfg.hotkey_action == "capture" else "open the window",
+                     f"; {self.cfg.capture_hotkey} → new screenshot" if keys.get(self.cfg.capture_hotkey) else "")
+            self._active_hotkey = (self.cfg.hotkey, self.cfg.capture_hotkey)
         except Exception as e:  # noqa: BLE001
             log.error("Could not register global hotkey %r: %s. Use the tray icon or bind "
                       "`python -m jpshot capture` to a key in your OS settings.", self.cfg.hotkey, e)
@@ -204,7 +218,7 @@ class JPShotApp(QObject):
         self.dictionary.set_backend(self.cfg.dictionary)
         self._apply_story_settings()
         self.result.apply_settings()
-        if self.cfg.hotkey != old_hotkey:
+        if (self.cfg.hotkey, self.cfg.capture_hotkey) != old_hotkey:
             self._setup_hotkey()
 
     def _auto_sync_known(self):
@@ -268,7 +282,14 @@ class JPShotApp(QObject):
         self._capture_callback = callback
         QTimer.singleShot(60, self._grab)
 
-    # -- capture flow -----------------------------------------------------
+    # -- open / capture flow ----------------------------------------------
+    def open_window(self):
+        """Hotkey / `jpshot open`: show the window with the last capture (or an empty state)."""
+        if self.session is not None:
+            return
+        self.result.show_last()
+
+
     def start_capture(self):
         if self.session is not None or self.busy:
             log.debug("Capture already in progress; ignoring")

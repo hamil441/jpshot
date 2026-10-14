@@ -41,6 +41,7 @@ RENDER_MODE = {"japanese": "original", "furigana": "furigana", "hiragana": "hira
 CSS = f"""
 QToolButton#chip {{ padding: 3px 11px; border: 1px solid palette(mid); border-radius: 11px; }}
 QToolButton#chip:checked {{ background: {theme.ACCENT}; color: white; border-color: {theme.ACCENT}; }}
+QToolButton#shot {{ padding: 4px 12px; border-radius: 11px; background: {theme.ACCENT}; color: white; font-weight: bold; }}
 QLabel#sectionTitle {{ font-weight: 600; }}
 QLabel#muted {{ color: palette(placeholder-text); }}
 """
@@ -361,6 +362,7 @@ class ResultWindow(QWidget):
     settings_requested = Signal()
     theme_toggled = Signal()
     mine_requested = Signal()
+    capture_requested = Signal()     # the 📷 New screenshot button
 
     def __init__(self, cfg, dictionary, speaker, known=None):
         super().__init__(None, Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
@@ -509,6 +511,17 @@ class ResultWindow(QWidget):
 
     def _build_toolbar(self) -> QHBoxLayout:
         bar = QHBoxLayout()
+        shot = QToolButton()
+        shot.setObjectName("shot")
+        shot.setText("📷 New screenshot")
+        shot.setToolTip("Take another screenshot  (Ctrl+N)\nThis window stays open while you select")
+        shot.setShortcut(QKeySequence("Ctrl+N"))
+        shot.clicked.connect(self.capture_requested.emit)
+        self.shot_btn = shot
+        bar.addWidget(shot)
+        sep0 = QFrame()
+        sep0.setFrameShape(QFrame.Shape.VLine)
+        bar.addWidget(sep0)
         self.chips: dict[str, QToolButton] = {}
         for i, key in enumerate(ALL_SECTIONS):
             b = QToolButton()
@@ -1317,15 +1330,15 @@ class ResultWindow(QWidget):
     def _save_pending_capture(self, req):
         if not self._pending_capture or self._pending_capture[0] != req:
             return
-        if not self.feat("history"):
-            self._pending_capture = None
-            return
         cap = self._pending_capture[1]
         self._pending_capture = None
         cap.japanese = self.ja_text
         en = self.sections["english"].view.toPlainText()
         cap.english = "" if en.startswith(("Translating", "(Translation failed")) else en
         cap.words = [t.base for line in self.ja_lines for t in line if self.known.counts(t)]
+        self.history.save_last(cap, self.pixmap)      # reopened by the hotkey / `jpshot open`
+        if not self.feat("history"):
+            return
         try:
             self.history.add(cap, self.pixmap)
         except Exception:  # noqa: BLE001
@@ -1362,11 +1375,54 @@ class ResultWindow(QWidget):
         self._history_window.raise_()
         self._history_window.activateWindow()
 
-    def show_saved(self, cap):
+    def show_last(self):
+        """Open the window: keep what's on screen, else the last saved capture, else an empty state."""
+        if not self.ja_text and self.source is None:
+            last = self.history.last()
+            if last:
+                log.info("Opening the last capture (%s)", last[0].when)
+                self.show_saved(last[0], badge="last capture", pixmap=last[1])
+                return
+            self.show_empty()
+            return
+        log.info("Showing the JPShot window")
+        self._present()
+
+    def show_empty(self):
+        """Nothing captured yet: a friendly empty window with the 📷 button."""
+        log.info("No saved capture yet: showing the empty window")
+        self._req += 1
+        self._pending_capture = None
+        self.source, self.pixmap = None, None
+        self.image_view.set_pixmap(None)
+        self._update_image_visibility()
+        for b in (self.copy_img_btn, self.mine_btn, self.ask_btn):
+            b.setEnabled(False)
+        self.speaker.stop()
+        self._hide_popup()
+        self.selbar.hide()
+        self._set_japanese("")
+        for key, sec in self.sections.items():
+            sec.view.set_content("No screenshot yet. Press 📷 New screenshot (Ctrl+N) and drag a box around some text."
+                                 if key == "english" else "まだ何もありません — 📷 New screenshot で始めましょう")
+            sec.badge.setText("")
+        self.status.setText("Ready — take a screenshot to start")
+        self._present()
+
+    def _present(self):
+        if not self._placed:
+            scr = QGuiApplication.primaryScreen().availableGeometry()
+            self.move(scr.center().x() - self.width() // 2, scr.top() + max(40, (scr.height() - self.height()) // 3))
+            self._placed = True
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def show_saved(self, cap, badge: str = "from history", pixmap=None):
         """Re-open a capture from history (no OCR or translation needed)."""
         self._req += 1
         self._pending_capture = None
-        pm = self.history.pixmap(cap)
+        pm = pixmap if pixmap is not None else self.history.pixmap(cap)
         self.pixmap = pm
         self.copy_img_btn.setEnabled(pm is not None)
         self.image_view.set_pixmap(pm)
@@ -1380,13 +1436,13 @@ class ResultWindow(QWidget):
         self._lookup_ctx = None
         en = self.sections["english"]
         en.view.set_content(cap.english)
-        en.badge.setText("from history")
+        en.badge.setText(badge)
         self._set_japanese(cap.japanese)
-        self._set_ja_badges("from history")
+        self._set_ja_badges(badge)
         self.status.setText(f"Captured {cap.when}")
-        self.show()
-        self.raise_()
-        self.activateWindow()
+        if badge == "from history":
+            self.history.save_last(cap, pm)
+        self._present()
 
     # -- grammar patterns ---------------------------------------------------
     def _update_patterns(self):
