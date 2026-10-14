@@ -10,7 +10,7 @@ from pathlib import Path
 from PySide6.QtCore import QBuffer, QIODevice, Qt, Signal
 from PySide6.QtGui import QGuiApplication, QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame,
-                               QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit,
+                               QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QPlainTextEdit,
                                QPushButton, QScrollArea, QToolButton, QVBoxLayout, QWidget)
 
 from . import anki
@@ -102,6 +102,7 @@ class MineDialog(QDialog):
         self.field_combos: dict[str, QComboBox] = {}
         self.text_edits: dict[str, QPlainTextEdit] = {}
         self.last_note_id: int | None = None
+        self._select_deck_after_load = ""
         self.setWindowTitle("Mine to Anki")
         self.resize(640, 760)
 
@@ -120,7 +121,14 @@ class MineDialog(QDialog):
         tf = QFormLayout(target)
         self.deck = QComboBox()
         self.deck.setEditable(False)
-        tf.addRow("Deck", self.deck)
+        self.new_deck_btn = QPushButton("+ New deck…")
+        self.new_deck_btn.setToolTip("Create a new Anki deck (use Parent::Child for a subdeck)")
+        self.new_deck_btn.setEnabled(False)
+        self.new_deck_btn.clicked.connect(self._new_deck)
+        deck_row = QHBoxLayout()
+        deck_row.addWidget(self.deck, 1)
+        deck_row.addWidget(self.new_deck_btn)
+        tf.addRow("Deck", deck_row)
         self.model = QComboBox()
         self.model.currentTextChanged.connect(self._model_changed)
         tf.addRow("Note type", self.model)
@@ -234,6 +242,38 @@ class MineDialog(QDialog):
             combo.blockSignals(False)
         self._model_changed(self.model.currentText())
         self.add_btn.setEnabled(bool(info["decks"] and info["models"]))
+        self.new_deck_btn.setEnabled(True)
+        if self._select_deck_after_load:
+            self.deck.setCurrentText(self._select_deck_after_load)
+            self._select_deck_after_load = ""
+
+    def _new_deck(self):
+        name, ok = QInputDialog.getText(self, "New Anki deck",
+                                        "Deck name (use Parent::Child to make a subdeck):",
+                                        text="JPShot")
+        name = name.strip()
+        if not ok or not name:
+            return
+        if self.info and name in self.info["decks"]:
+            self.deck.setCurrentText(name)
+            self.status.setText(f"Deck “{html.escape(name)}” already exists — selected it")
+            return
+        self.status.setText(f"Creating deck “{html.escape(name)}”…")
+        self.new_deck_btn.setEnabled(False)
+        run_async(anki.create_deck, self.cfg.anki_url, name,
+                  on_done=lambda _id: self._deck_created(name),
+                  on_error=self._deck_failed)
+
+    def _deck_created(self, name: str):
+        self.cfg.anki_deck = name
+        self.cfg.save()
+        self._select_deck_after_load = name
+        self.load_anki()
+
+    def _deck_failed(self, msg):
+        self.new_deck_btn.setEnabled(True)
+        self.status.setText(f"<span style='color:#d44'>Could not create deck: "
+                            f"{html.escape(msg.split(': ', 1)[-1])}</span>")
 
     def _model_changed(self, model: str):
         while self.map_form.rowCount():

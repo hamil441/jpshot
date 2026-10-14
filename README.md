@@ -85,7 +85,7 @@ The first kanji breakdown downloads the KRADFILE component data (about 100 KB, E
 
 1. In Anki: **Tools → Add-ons → Get Add-ons…**, enter **2055492159** (AnkiConnect), and restart Anki.
 2. Keep Anki open while you use JPShot.
-3. After a capture, click **⛏ Mine** (Ctrl+M). Choose a deck and note type, then choose what goes in each field. JPShot guesses from the field names (Sentence, Meaning, Picture, Audio…) and remembers your choices per note type.
+3. After a capture, click **⛏ Mine** (Ctrl+M). Choose a deck (or **+ New deck…** to create one) and note type, then choose what goes in each field. JPShot guesses from the field names (Sentence, Meaning, Picture, Audio…) and remembers your choices per note type.
 4. Edit any text, add or remove images (📷 takes another screenshot without leaving the dialog), and press **Add card** (Ctrl+Enter).
 
 Furigana is written in Anki's format (`食[た]べる`), so it shows above the kanji on cards that use `{{furigana:Field}}`. If you Shift-hover a word before mining, that word, its reading and its meaning are filled in too.

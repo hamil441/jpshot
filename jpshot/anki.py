@@ -40,6 +40,12 @@ def load_collection_info(url: str) -> dict:
     return {"decks": decks, "models": models, "fields": fields}
 
 
+def create_deck(url: str, name: str) -> int:
+    deck_id = invoke(url, "createDeck", deck=name)
+    log.info("Anki deck created: %r (id %s)", name, deck_id)
+    return deck_id
+
+
 def add_note(url: str, note: dict) -> int:
     nid = invoke(url, "addNote", note=note)
     log.info("Anki note added: %s", nid)
