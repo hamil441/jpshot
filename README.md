@@ -83,7 +83,7 @@ Default hotkey: **Ctrl+Alt+J**. Left-clicking the tray icon also starts a captur
 
 The result window stays open while you take the next capture and simply updates; move it wherever you like and it stays there. Changing the speed while audio is playing restarts it at the new speed from about the same spot. Your choices are remembered.
 
-Pitch accent comes from UniDic's accent data (Tokyo standard). For verbs and adjectives it's shown for the dictionary form, since conjugation can move the drop; treat it as a guide.
+In Pitch mode the ひらがな and Furigana rows show pitch per sound (orange = high, blue = low, with a pitch line and drop tick in the Furigana row; particles follow the word before), while the 日本語 and Rōmaji rows color whole words by pattern. Pitch accent comes from UniDic's accent data (Tokyo standard). For verbs and adjectives it's shown for the dictionary form, since conjugation can move the drop; treat it as a guide.
 
 Grammar colors: blue = noun, red = verb, orange = adjective, purple = adverb, green = particle, pink = auxiliary (tense, politeness, negation…).
 

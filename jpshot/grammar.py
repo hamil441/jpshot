@@ -276,4 +276,5 @@ def to_html(info: Info) -> str:
 
 
 def legend_html() -> str:
-    return "  ".join(f"<span style='color:{POS[k][1]}'>■</span> {POS[k][0]}" for k in LEGEND)
+    return ("  ".join(f"<span style='color:{POS[k][1]}'>■</span> {POS[k][0]}" for k in LEGEND)
+            + "  ·  plain = symbols, numbers, non-Japanese")

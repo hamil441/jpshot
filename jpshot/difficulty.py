@@ -14,7 +14,7 @@ from .kanji import is_kanji
 
 log = logging.getLogger("jpshot.difficulty")
 
-CONTENT_POS = {"名詞", "代名詞", "動詞", "形容詞", "形状詞", "副詞", "連体詞", "接続詞", "感動詞"}
+CONTENT_POS = {"接尾辞", "名詞", "代名詞", "動詞", "形容詞", "形状詞", "副詞", "連体詞", "接続詞", "感動詞"}
 KEIGO = {"いらっしゃる", "おっしゃる", "申す", "参る", "致す", "存じる", "為さる", "下さる", "伺う", "召し上がる",
          "御座る", "頂く", "差し上げる"}
 LABELS = {1: "Beginner", 2: "Elementary", 3: "Intermediate", 4: "Upper-intermediate", 5: "Advanced"}
@@ -141,11 +141,16 @@ def estimate(lines: list[list[Token]], kanji_info, word_entries, max_words: int 
 
 
 GRADIENT = ["#2fb383", "#7cc04b", "#e3c03a", "#e8743d", "#e8556d"]   # easy … hard
+MUTED = "#8e9099"   # particles and verb endings: not rated
 
 
 def word_color(d: "Difficulty | None", tok: Token) -> str | None:
     """Color for one word in difficulty-coloring mode (None = leave uncolored)."""
-    if d is None or not tok.lookupable or tok.pos not in CONTENT_POS:
+    if d is None:
+        return None
+    if tok.pos in ("助詞", "助動詞") or (tok.pos == "接尾辞" and not any(is_kanji(c) for c in tok.surface)):
+        return MUTED
+    if not tok.lookupable or (tok.pos not in CONTENT_POS and tok.pos != "接尾辞"):
         return None
     h = d.word_hardness.get(tok.base)
     if h is None:
@@ -166,4 +171,5 @@ def word_level(d: "Difficulty | None", tok: Token) -> str:
 
 def legend_html() -> str:
     cells = "".join(f"<span style='color:{c}'>■</span>" for c in GRADIENT)
-    return f"word difficulty: easy {cells} hard  <span style='color:gray'>(≈N5 … N1)</span>"
+    return (f"word difficulty: easy {cells} hard  <span style='color:gray'>(≈N5 … N1)</span>  ·  "
+            f"<span style='color:{MUTED}'>■</span> particles/endings (not rated)")

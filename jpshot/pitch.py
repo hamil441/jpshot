@@ -12,10 +12,18 @@ from __future__ import annotations
 import html
 import re
 
-from .japanese import Token, kata_to_hira
+from .japanese import Token, display, kata_to_hira
 
 SMALL = set("ゃゅょぁぃぅぇぉゎャュョァィゥェォヮ")
 COLORS = {"heiban": "#3b8fe8", "atamadaka": "#e8556d", "nakadaka": "#f0a030", "odaka": "#2fb383"}
+HIGH, LOW = "#ff8a3d", "#5aa9ff"       # per-sound colors in the kana rows
+MUTED = "#8e9099"
+TERMS = {   # term, reading, literal meaning, what it sounds like
+    "heiban": ("平板", "へいばん", "flat", "low first sound, then high and stays high (even on a following particle)"),
+    "atamadaka": ("頭高", "あたまだか", "head-high", "high first sound, then low"),
+    "nakadaka": ("中高", "なかだか", "middle-high", "low, rises, then drops inside the word"),
+    "odaka": ("尾高", "おだか", "tail-high", "low, rises to the end, drops on the following particle"),
+}
 NAMES = {
     "heiban": "heiban (flat) — rises after the first sound and stays high",
     "atamadaka": "atamadaka — high on the first sound, then drops",
@@ -90,4 +98,64 @@ def pattern_html(tok: Token) -> str:
 
 
 def legend_html() -> str:
-    return "  ".join(f"<span style='color:{COLORS[k]}'>■</span> {k}" for k in ("heiban", "atamadaka", "nakadaka", "odaka"))
+    words = "  ".join(
+        f"<span style='color:{COLORS[k]}'>■</span> {TERMS[k][0]} ({TERMS[k][1]}, {k}) “{TERMS[k][2]}”"
+        for k in ("heiban", "atamadaka", "nakadaka", "odaka"))
+    return (f"日本語 / Rōmaji: {words}<br>"
+            f"ひらがな / Furigana, per sound: <span style='color:{HIGH}'>■ high</span>  "
+            f"<span style='color:{LOW}'>■ low</span>  ꜜ = drop  ·  "
+            f"<span style='color:{MUTED}'>■</span> particles/endings (follow the word before)")
+
+
+def legend_tooltip() -> str:
+    return "\n".join(f"{TERMS[k][0]} ({TERMS[k][1]}) {k} — “{TERMS[k][2]}”: {TERMS[k][3]}"
+                     for k in ("heiban", "atamadaka", "nakadaka", "odaka"))
+
+
+def word_color(tok: Token) -> str | None:
+    """Whole-word color for rows with kanji or rōmaji (particles get a muted color)."""
+    c = color_for(tok)
+    if c:
+        return c
+    if tok.pos in ("助詞", "助動詞") or (tok.pos == "接尾辞" and not tok.atype):
+        return MUTED
+    return None
+
+
+def word_highs(tok: Token) -> list[bool] | None:
+    """High/low for each sound of the word as displayed in kana (None if unknown)."""
+    n = accent_of(tok)
+    if n is None or not tok.lookupable or tok.pos in NO_ACCENT_POS:
+        return None
+    ms = morae(display(tok, "hiragana"))
+    if not ms:
+        return None
+    if n == 0:
+        return [False] + [True] * (len(ms) - 1)
+    return [i == 0 if n == 1 else (0 < i < n) for i in range(len(ms))]
+
+
+def sentence_highs(lines: list[list[Token]]) -> dict[int, list[bool]]:
+    """Per-sound pitch for every token (keyed by id(token)); particles/endings follow the word before:
+    high after a heiban word, low after a word that already dropped."""
+    out: dict[int, list[bool]] = {}
+    for line in lines:
+        state: bool | None = None          # pitch level carried into following particles
+        for tok in line:
+            highs = word_highs(tok)
+            if highs is not None:
+                out[id(tok)] = highs
+                state = accent_of(tok) == 0
+                if len(highs) == 1 and accent_of(tok) == 0:
+                    state = True           # one-sound heiban word: rises on the particle
+                continue
+            if tok.pos in ("助詞", "助動詞", "接尾辞") and state is not None:
+                ms = morae(display(tok, "hiragana"))
+                out[id(tok)] = [state] * len(ms)
+                continue
+            state = None
+    return out
+
+
+def mora_colors(highs: list[bool] | None) -> list[str] | None:
+    return [HIGH if h else LOW for h in highs] if highs else None

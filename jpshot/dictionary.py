@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -37,22 +38,25 @@ class Dictionary(QObject):
     def __init__(self, backend: str = "auto"):
         super().__init__()
         self.backend = backend
-        # One worker thread: jamdict's SQLite connection must stay on a single thread.
-        self._exec = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dict")
+        # Separate queues so slow background work never delays a word lookup:
+        self._exec = ThreadPoolExecutor(max_workers=1, thread_name_prefix="lookup")        # popups
+        self._kanji_exec = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kanji")   # breakdowns
+        self._story_exec = ThreadPoolExecutor(max_workers=1, thread_name_prefix="story")   # AI writing
+        self._bg_exec = ThreadPoolExecutor(max_workers=1, thread_name_prefix="difficulty")
         self._cache: dict[str, list[Entry]] = {}
-        self._jam = None
+        self._local = threading.local()     # per-thread HTTP session and jamdict connection
         self._jam_failed = backend == "jisho"
-        self._session = None
         from .kanji import KanjiDB
         self.kanji = KanjiDB(self._http)
 
     def _http(self):
         import requests
 
-        if self._session is None:
-            self._session = requests.Session()
-            self._session.headers["User-Agent"] = "jpshot (learning tool)"
-        return self._session
+        s = getattr(self._local, "session", None)
+        if s is None:
+            s = self._local.session = requests.Session()
+            s.headers["User-Agent"] = "jpshot (learning tool)"
+        return s
 
     def set_backend(self, backend: str) -> None:
         if backend != self.backend:
@@ -78,7 +82,7 @@ class Dictionary(QObject):
                 d = None
             self.difficulty_finished.emit(req_id, d)
 
-        self._exec.submit(job)
+        self._bg_exec.submit(job)
 
     def lookup_kanji(self, req_id: int, word: str, candidates: list[str] | None = None) -> None:
         from .kanji import template_word_story
@@ -101,20 +105,27 @@ class Dictionary(QObject):
                        "word_story": template_word_story(word, meaning, infos),
                        "hint": not self.kanji.has_writer()}
             self.kanji_finished.emit(req_id, payload)
-            if not infos or not self.kanji.has_writer():
-                return
-            # second pass: written explanations, then update the popup again
-            ws = self.kanji.word_story(word, reading, meaning, infos)
-            if ws:
-                payload["word_story"] = ws
-            for k in infos:
-                if not k.story_is_ai:
-                    story = self.kanji.story(k)
-                    if story:
-                        k.story, k.story_is_ai = story, True
-                self.kanji_finished.emit(req_id, payload)
+            if infos and self.kanji.has_writer():
+                self._story_exec.submit(stories, payload, reading, meaning)
 
-        self._exec.submit(job)
+        def stories(payload, reading, meaning):
+            # second pass: written explanations, updating the popup as each arrives
+            try:
+                infos = payload["infos"]
+                ws = self.kanji.word_story(word, reading, meaning, infos)
+                if ws:
+                    payload["word_story"] = ws
+                    self.kanji_finished.emit(req_id, payload)
+                for k in infos:
+                    if not k.story_is_ai:
+                        story = self.kanji.story(k)
+                        if story:
+                            k.story, k.story_is_ai = story, True
+                            self.kanji_finished.emit(req_id, payload)
+            except Exception:  # noqa: BLE001
+                log.exception("Writing explanations for %s failed", word)
+
+        self._kanji_exec.submit(job)
 
     # -- backends ---------------------------------------------------------
     def _lookup_one(self, q: str) -> list[Entry]:
@@ -130,17 +141,18 @@ class Dictionary(QObject):
 
     def _jamdict(self, q: str) -> list[Entry] | None:
         try:
-            if self._jam is None:
+            jam = getattr(self._local, "jam", None)
+            if jam is None:
                 from jamdict import Jamdict
 
-                self._jam = Jamdict()
-                if not getattr(self._jam, "ready", True):
+                jam = self._local.jam = Jamdict()
+                if not getattr(jam, "ready", True):
                     raise RuntimeError("jamdict data not installed")
                 log.info("Using offline JMdict (jamdict)")
             try:
-                res = self._jam.lookup(q, lookup_chars=False)
+                res = jam.lookup(q, lookup_chars=False)
             except TypeError:
-                res = self._jam.lookup(q)
+                res = jam.lookup(q)
         except Exception as e:  # noqa: BLE001
             if self.backend == "jamdict":
                 raise

@@ -13,11 +13,12 @@ from PySide6.QtCore import QPoint, QRect, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPalette
 from PySide6.QtWidgets import QFrame, QScrollArea, QWidget
 
-from . import grammar, japanese, lookupkey
+from . import grammar, japanese, lookupkey, pitch
 from .japanese import Token
 
 log = logging.getLogger("jpshot.furigana")
 PAD = 6
+TOP = 5      # room above the readings for the pitch line
 
 
 @dataclass
@@ -56,6 +57,7 @@ class _Canvas(QWidget):
         self.colored = False
         self.hover_lookup = False
         self.color_fn = grammar.color_for
+        self.pitch_fn = None   # tok -> [high?, …] per sound, in pitch mode
 
     # -- layout -----------------------------------------------------------
     def set_fonts(self, base: QFont):
@@ -66,7 +68,7 @@ class _Canvas(QWidget):
 
     def relayout(self):
         fb, fr = QFontMetrics(self.base_font), QFontMetrics(self.ruby_font)
-        self.line_h = fr.height() + fb.height() + 6
+        self.line_h = TOP + fr.height() + fb.height() + 6
         self.items = []
         width = max(50, self.width())
         x = y = PAD
@@ -132,12 +134,16 @@ class _Canvas(QWidget):
             if sel and sel[0] <= i <= sel[1]:
                 p.fillRect(box, hl)
             if it is self.hover:
-                p.fillRect(QRect(it.x, it.y + ruby_h + 2, it.w, fb.height() + 2), hover_bg)
+                p.fillRect(QRect(it.x, it.y + TOP + ruby_h + 2, it.w, fb.height() + 2), hover_bg)
             col = QColor(text_col)
             if self.colored:
                 c = self.color_fn(it.tok)
-                if c:
+                if c and isinstance(c, str):
                     col = QColor(c)
+            highs = self.pitch_fn(it.tok) if (self.colored and self.pitch_fn) else None
+            if highs:
+                self._paint_pitch(p, it, highs, text_col, fb, fr)
+                continue
             ruby_col = QColor(col)
             ruby_col.setAlpha(190)
             for s in it.segs:
@@ -145,11 +151,50 @@ class _Canvas(QWidget):
                     p.setFont(self.ruby_font)
                     p.setPen(ruby_col)
                     rw = fr.horizontalAdvance(s.ruby)
-                    p.drawText(it.x + s.x + (s.w - rw) // 2, it.y + fr.ascent(), s.ruby)
+                    p.drawText(it.x + s.x + (s.w - rw) // 2, it.y + TOP + fr.ascent(), s.ruby)
                 p.setFont(self.base_font)
                 p.setPen(col)
                 bw = fb.horizontalAdvance(s.base)
-                p.drawText(it.x + s.x + (s.w - bw) // 2, it.y + ruby_h + 2 + fb.ascent(), s.base)
+                p.drawText(it.x + s.x + (s.w - bw) // 2, it.y + TOP + ruby_h + 2 + fb.ascent(), s.base)
+
+    def _paint_pitch(self, p, it, highs, text_col, fb, fr):
+        """Color each sound high/low and draw a pitch line: high sounds overlined, ꜜ-style tick at the drop."""
+        ruby_h = fr.height()
+        idx = 0
+        cells: list[tuple[int, int, bool]] = []   # (x0, x1, high) for every sound, left to right
+        for s in it.segs:
+            kana = s.ruby or s.base
+            ms = pitch.morae(kana)
+            hs = (highs[idx:idx + len(ms)] + [False] * len(ms))[:len(ms)]
+            idx += len(ms)
+            if s.ruby:   # kanji with reading: base in normal color, reading colored per sound
+                p.setFont(self.base_font)
+                p.setPen(text_col)
+                bw = fb.horizontalAdvance(s.base)
+                p.drawText(it.x + s.x + (s.w - bw) // 2, it.y + TOP + ruby_h + 2 + fb.ascent(), s.base)
+                metrics, font, base_y = fr, self.ruby_font, it.y + TOP + fr.ascent()
+            else:        # kana: the characters themselves carry the pitch
+                metrics, font, base_y = fb, self.base_font, it.y + TOP + ruby_h + 2 + fb.ascent()
+            x = it.x + s.x + (s.w - metrics.horizontalAdvance(kana)) // 2
+            p.setFont(font)
+            for m, h in zip(ms, hs):
+                w = metrics.horizontalAdvance(m)
+                p.setPen(QColor(pitch.HIGH if h else pitch.LOW))
+                p.drawText(x, base_y, m)
+                cells.append((x, x + w, h))
+                x += w
+        # pitch line along the top of the item
+        y = it.y + 2
+        pen_col = QColor(pitch.HIGH)
+        p.setPen(pen_col)
+        for j, (x0, x1, h) in enumerate(cells):
+            if h:
+                p.drawLine(x0 + 1, y, x1 - 1, y)
+                if j + 1 < len(cells) and not cells[j + 1][2]:
+                    p.drawLine(x1 - 1, y, x1 - 1, y + 4)          # the drop
+                elif j + 1 == len(cells) and it.tok.pos not in ("助詞", "助動詞") and \
+                        pitch.accent_of(it.tok) and pitch.accent_of(it.tok) >= len(cells):
+                    p.drawLine(x1 - 1, y, x1 - 1, y + 4)          # odaka: drops after the word
 
     # -- hit testing / mouse ----------------------------------------------
     def index_at(self, pos: QPoint) -> int | None:
@@ -279,6 +324,14 @@ class FuriganaView(QScrollArea):
     @color_fn.setter
     def color_fn(self, fn):
         self.canvas.color_fn = fn
+
+    @property
+    def pitch_fn(self):
+        return self.canvas.pitch_fn
+
+    @pitch_fn.setter
+    def pitch_fn(self, fn):
+        self.canvas.pitch_fn = fn
 
     def refresh_colors(self):
         self.canvas.update()

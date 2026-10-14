@@ -105,6 +105,19 @@ class WordView(QTextEdit):
                 col = self.color_fn(span.token)
                 if not col:
                     continue
+                if isinstance(col, list):   # one color per sound (pitch mode)
+                    cur.setPosition(span.start)
+                    cur.setPosition(span.end, QTextCursor.MoveMode.KeepAnchor)
+                    pos = span.start
+                    for m, c in zip(pitch.morae(cur.selectedText()), col):
+                        n = japanese.u16len(m)
+                        cur.setPosition(pos)
+                        cur.setPosition(pos + n, QTextCursor.MoveMode.KeepAnchor)
+                        fmt = QTextCharFormat()
+                        fmt.setForeground(QColor(c))
+                        cur.mergeCharFormat(fmt)
+                        pos += n
+                    continue
                 cur.setPosition(span.start)
                 cur.setPosition(span.end, QTextCursor.MoveMode.KeepAnchor)
                 fmt = QTextCharFormat()
@@ -298,6 +311,7 @@ class ResultWindow(QWidget):
         self._lookup_req = 0
         self._lookup_ctx = None
         self._placed = False
+        self._pitch_map: dict = {}
         self._sel_req = 0
         self._diff_req = 0
         self.difficulty = None
@@ -563,10 +577,12 @@ class ResultWindow(QWidget):
         self._apply_color_mode()
         log.info("Word coloring: %s", self.cfg.color_mode)
 
-    def _color_fn(self):
+    def _color_fn(self, row: str = "japanese"):
         mode = self.cfg.color_mode
         if mode == "pitch":
-            return pitch.color_for
+            if row == "hiragana":
+                return lambda tok: pitch.mora_colors(self._pitch_map.get(id(tok))) or pitch.word_color(tok)
+            return pitch.word_color
         if mode == "difficulty":
             return lambda tok: difficulty.word_color(self.difficulty, tok)
         return grammar.color_for
@@ -577,12 +593,15 @@ class ResultWindow(QWidget):
             b.setChecked(m == mode)
         legends = {"grammar": grammar.legend_html, "pitch": pitch.legend_html, "difficulty": difficulty.legend_html}
         self.legend.setText(legends[mode]() if mode in legends else "")
+        self.legend.setToolTip(pitch.legend_tooltip() if mode == "pitch" else "")
+        self._pitch_map = pitch.sentence_highs(self.ja_lines) if mode == "pitch" else {}
         self.legend.setVisible(mode in legends)
         on = mode != "none"
-        fn = self._color_fn()
         for key, sec in self.sections.items():
             if key in RENDER_MODE:
-                sec.view.color_fn = fn
+                sec.view.color_fn = self._color_fn(key)
+                if isinstance(sec.view, FuriganaView):
+                    sec.view.pitch_fn = (lambda tok: self._pitch_map.get(id(tok))) if mode == "pitch" else None
                 sec.view.hover_lookup = on
                 sec.view.set_colors(False)
                 sec.view.set_colors(on)
@@ -688,6 +707,8 @@ class ResultWindow(QWidget):
         except Exception:
             log.exception("Japanese tokenizer failed; readings and hover lookup disabled")
             self.ja_lines = [[japanese.Token(line, "", line, "", "", False)] for line in text.split("\n")]
+        if self.cfg.color_mode == "pitch":
+            self._pitch_map = pitch.sentence_highs(self.ja_lines)
         for key, mode in RENDER_MODE.items():
             view = self.sections[key].view
             if isinstance(view, FuriganaView):

@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -231,7 +232,8 @@ class KanjiDB:
                 self._api_cache = json.loads(self._api_cache_path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             self._api_cache = {}
-        self._jam = None
+        self._jam_local = threading.local()
+        self._save_lock = threading.Lock()
         self._origin_path = cache_dir() / "origins2.json"
         self._story_path = cache_dir() / "stories.json"
         try:
@@ -272,7 +274,8 @@ class KanjiDB:
             return ""   # don't cache failures
         self._origins[ch] = text
         try:
-            self._origin_path.write_text(json.dumps(self._origins, ensure_ascii=False), encoding="utf-8")
+            with self._save_lock:
+                self._origin_path.write_text(json.dumps(self._origins, ensure_ascii=False), encoding="utf-8")
         except Exception:  # noqa: BLE001
             pass
         return text
@@ -430,7 +433,8 @@ class KanjiDB:
             log.info("Story for %s (%s): %s", what, provider, text)
             self._stories[key] = text
             try:
-                self._story_path.write_text(json.dumps(self._stories, ensure_ascii=False), encoding="utf-8")
+                with self._save_lock:
+                    self._story_path.write_text(json.dumps(self._stories, ensure_ascii=False), encoding="utf-8")
             except Exception:  # noqa: BLE001
                 pass
         return text
@@ -535,18 +539,20 @@ class KanjiDB:
             return None
         self._api_cache[ch] = data
         try:
-            self._api_cache_path.write_text(json.dumps(self._api_cache, ensure_ascii=False), encoding="utf-8")
+            with self._save_lock:
+                self._api_cache_path.write_text(json.dumps(self._api_cache, ensure_ascii=False), encoding="utf-8")
         except Exception:  # noqa: BLE001
             pass
         return data
 
     def _jamdict_info(self, ch: str) -> dict | None:
         try:
-            if self._jam is None:
+            jam = getattr(self._jam_local, "jam", None)
+            if jam is None:
                 from jamdict import Jamdict
 
-                self._jam = Jamdict()
-            res = self._jam.lookup(ch)
+                jam = self._jam_local.jam = Jamdict()
+            res = jam.lookup(ch)
             if not res.chars:
                 return None
             c = res.chars[0]
