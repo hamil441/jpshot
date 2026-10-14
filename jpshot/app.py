@@ -74,6 +74,7 @@ class JPShotApp(QObject):
         lookupkey.set_key(cfg.lookup_key)
         from .known import KnownWords
         self.known = KnownWords()
+        self._known_was_on = "known" in cfg.features
         self.result = ResultWindow(cfg, self.dictionary, self.speaker, self.known)
         self.result.settings_requested.connect(self.open_settings)
         self.result.theme_toggled.connect(self.toggle_theme)
@@ -88,8 +89,11 @@ class JPShotApp(QObject):
         self._setup_tray()
         self._setup_hotkey()
         QTimer.singleShot(0, self._warm_up)
-        if cfg.known_sync and "known" in cfg.features:
-            QTimer.singleShot(1500, lambda: self.sync_known(quiet=True))
+        # sync known words at start-up and every 30 minutes (only when the feature is on)
+        QTimer.singleShot(1500, self._auto_sync_known)
+        self._known_timer = QTimer(self, interval=30 * 60 * 1000)
+        self._known_timer.timeout.connect(self._auto_sync_known)
+        self._known_timer.start()
 
     # -- setup ------------------------------------------------------------
     def _warm_up(self):
@@ -191,6 +195,9 @@ class JPShotApp(QObject):
 
     def apply_settings(self):
         old_hotkey = getattr(self, "_active_hotkey", None)
+        if "known" in self.cfg.features and not getattr(self, "_known_was_on", False) and self.cfg.known_sync:
+            self.sync_known(quiet=True)          # Known words just switched on: sync right away
+        self._known_was_on = "known" in self.cfg.features
         theme.apply(self.cfg.theme)
         ocr.configure(self.cfg.tesseract_cmd)
         self.dictionary.set_backend(self.cfg.dictionary)
@@ -199,17 +206,24 @@ class JPShotApp(QObject):
         if self.cfg.hotkey != old_hotkey:
             self._setup_hotkey()
 
+    def _auto_sync_known(self):
+        if self.cfg.known_sync and "known" in self.cfg.features:
+            self.sync_known(quiet=True)
+
     def sync_known(self, quiet: bool = False, done=None):
         fields = [f for f in self.cfg.known_fields.split(",")]
 
-        def ok(n):
-            log.info("Known words: %d from Anki (%d total)", n, self.known.total())
+        from .known import describe_report
+
+        def ok(report):
+            text = describe_report(report, self.known.total())
+            log.info("Known words: %s", text)
             self.result.known_changed()
             if done:
-                done(f"Synced {n} words from Anki · {self.known.total()} known in total")
+                done(text)
 
         def fail(msg):
-            (log.debug if quiet else log.warning)("Known-word sync skipped: %s", msg)
+            log.info("Known-word sync didn't run: %s", msg.split(": ", 1)[-1])
             if done:
                 done(f"Sync failed: {msg.split(': ', 1)[-1]}")
 

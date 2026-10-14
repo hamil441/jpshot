@@ -774,7 +774,8 @@ class ResultWindow(QWidget):
             text = (f"<span style='color:{UNKNOWN_COLOR}'>■</span> new to you  "
                     f"<span style='color:{KNOWN_COLOR}'>■</span> known  ·  "
                     f"<span style='color:gray'>hold Shift on a word and press K to mark it known/unknown "
-                    f"· {self.known.total()} known words</span>")
+                    + (f"· {self.known.total():,} known words</span>" if self.known.total() else
+                       "· no known words yet — ⚙ Settings → Known words → Sync now</span>"))
         else:
             text = ""
         self.legend.setText(text)
