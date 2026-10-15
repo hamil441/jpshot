@@ -153,6 +153,21 @@ The free Microsoft service has two Japanese voices (Nanami and Keita), plus Goog
 
 Furigana is written in Anki's format (`食[た]べる`), so it shows above the kanji on cards that use `{{furigana:Field}}`. If you Shift-hover a word before mining, that word, its reading and its meaning are filled in too.
 
+## Android app (floating bubble)
+
+The Android app has everything the phone web app has, plus a **floating bubble** over your other apps. Keep reading, and tap the bubble whenever you get stuck. JPShot opens with a screenshot of what you were looking at; drag a box around the hard part. It works in split screen: put your reading app on one half and JPShot on the other.
+
+**Install:** on your phone, open **https://github.com/hamil441/jpshot/releases/tag/android-latest**, tap **JPShot.apk**, then open the download. Android will ask you to allow installing from your browser the first time. Each push to `main` rebuilds it there; install the new one over the old.
+
+**First run:** tap **🫧 Start the bubble**, then:
+1. Allow notifications (the bubble shows a small notification while it's on).
+2. Allow **Display over other apps** for JPShot, then go back.
+3. Allow screen capture (Android's "start recording or casting" prompt). This is asked each time you start the bubble.
+
+**Using the bubble:** tap it to read the screen, drag it to move (it snaps to the edge), long-press it to close (or tap *Turn off* in its notification).
+
+The app also adds **JPShot to the Share menu** (images and text), uses the phone's own **Japanese voice** (Settings → Text-to-speech → install Japanese if you don't hear anything), and works offline except for translation, OCR's first download and explanations. For AnkiConnect Android, add `https://appassets.androidplatform.net` to its CORS hosts.
+
 ## Phone version (Android & iPhone)
 
 JPShot also runs as a web app on your phone: **https://hamil441.github.io/jpshot/**

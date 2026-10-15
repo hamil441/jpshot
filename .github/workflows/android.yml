@@ -66,6 +66,8 @@ jobs:
           mkdir -p android/app/src/main/assets
           cp -r web android/app/src/main/assets/web
           rm -f android/app/src/main/assets/web/sw.js
+          # the Android build un-gzips *.gz assets; keep the tokenizer's files gzipped under another name
+          for f in android/app/src/main/assets/web/vendor/kuromoji/dict/*.gz; do mv "$f" "$f.bin"; done
           du -sh android/app/src/main/assets/web
 
       - uses: actions/setup-java@v4

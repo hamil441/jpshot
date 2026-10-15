@@ -97,6 +97,7 @@ class MainActivity : ComponentActivity() {
 
         val loader = WebViewAssetLoader.Builder()
             .setDomain(HOST)
+            .addPathHandler("/assets/web/vendor/kuromoji/dict/", GzipAssets())   // must come before /assets/
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
             .addPathHandler("/native/", ShotFiles())
             .build()
@@ -203,6 +204,16 @@ class MainActivity : ComponentActivity() {
     private fun cleanOldShots(keep: String) {
         shotDir(this).listFiles()?.filter { it.name != keep && it.lastModified() < System.currentTimeMillis() - 10 * 60_000 }
             ?.forEach { it.delete() }
+    }
+
+    /** The tokenizer dictionary is bundled as *.gz.bin (the build would un-gzip *.gz); serve it as *.gz. */
+    private inner class GzipAssets : WebViewAssetLoader.PathHandler {
+        override fun handle(path: String): WebResourceResponse? = try {
+            val stream = assets.open("web/vendor/kuromoji/dict/${path.substringAfterLast('/')}.bin")
+            WebResourceResponse("application/octet-stream", null, stream)
+        } catch (e: Exception) {
+            null
+        }
     }
 
     /** Serves files from cache/shots at https://appassets.androidplatform.net/native/<name>. */
