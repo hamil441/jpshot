@@ -1,0 +1,114 @@
+name: Build the Android app
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "android/**"
+      - "web/**"
+      - "tools/build_web_data.py"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache downloaded sources
+        uses: actions/cache@v4
+        with:
+          path: .data-cache
+          key: webdata-v1-${{ hashFiles('tools/build_web_data.py') }}
+
+      - name: Download dictionary, kanji, pitch and tokenizer data
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .data-cache && cd .data-cache
+          if [ ! -f jmdict.json ]; then
+            gh release download --repo scriptin/jmdict-simplified --pattern 'jmdict-eng-common-[0-9]*.json.zip' --clobber
+            unzip -o jmdict-eng-common-*.json.zip && mv jmdict-eng-common-*.json jmdict.json
+          fi
+          if [ ! -f kanjidic.json ]; then
+            gh release download --repo scriptin/jmdict-simplified --pattern 'kanjidic2-en-[0-9]*.json.zip' --clobber
+            unzip -o kanjidic2-en-*.json.zip && mv kanjidic2-en-*.json kanjidic.json
+          fi
+          [ -f accents.txt ] || curl -fsSL -o accents.txt \
+            https://raw.githubusercontent.com/mifunetoshiro/kanjium/master/data/source_files/raw/accents.txt \
+            || echo "pitch accent data unavailable; continuing without it"
+          if [ ! -d kuromoji ]; then
+            npm pack kuromoji@0.1.2
+            mkdir kuromoji && tar -xzf kuromoji-0.1.2.tgz -C kuromoji --strip-components=1
+          fi
+          ls -la
+
+      - name: Build compact data
+        run: python3 tools/build_web_data.py .data-cache web
+
+      - name: Vendor the Japanese tokenizer
+        run: |
+          mkdir -p web/vendor/kuromoji
+          cp .data-cache/kuromoji/build/kuromoji.js web/vendor/kuromoji/
+          cp -r .data-cache/kuromoji/dict web/vendor/kuromoji/
+
+      - name: Bundle the web app into the APK
+        run: |
+          rm -rf android/app/src/main/assets/web
+          mkdir -p android/app/src/main/assets
+          cp -r web android/app/src/main/assets/web
+          rm -f android/app/src/main/assets/web/sw.js
+          du -sh android/app/src/main/assets/web
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Build the APK
+        working-directory: android
+        env:
+          KEYSTORE_B64: ${{ secrets.JPSHOT_KEYSTORE_B64 }}
+          JPSHOT_KEYSTORE_PASSWORD: ${{ secrets.JPSHOT_KEYSTORE_PASSWORD || 'jpshot-sideload' }}
+        run: |
+          set -o pipefail
+          if [ -n "$KEYSTORE_B64" ]; then echo "$KEYSTORE_B64" | base64 -d > jpshot.keystore; fi
+          gradle --no-daemon --console=plain assembleRelease 2>&1 | tee build.log
+
+      - name: Show build errors
+        if: failure()
+        working-directory: android
+        run: |
+          grep -E "^e: |error:|What went wrong|Could not |Execution failed|AAPT|> .*(rror|ailed)" build.log \
+            | sort -u | head -40 | while IFS= read -r line; do echo "::error::${line}"; done
+          exit 1
+
+      - name: Name the APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk JPShot.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JPShot-android
+          path: JPShot.apk
+
+      - name: Publish the download (Releases → android-latest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete android-latest --yes --cleanup-tag || true
+          gh release create android-latest JPShot.apk \
+            --title "JPShot for Android (build ${{ github.run_number }})" \
+            --notes "Open this page on your phone, tap **JPShot.apk**, then open the download to install. Built from ${{ github.sha }}." \
+            --target ${{ github.sha }} --prerelease

@@ -8,12 +8,13 @@ import * as P from "./pitch.js";
 import * as D from "./difficulty.js";
 import * as K from "./kanji.js";
 import { conjugations, tableHTML } from "./conjugate.js";
-import { settings, saveSettings, feat, translate, speak, stopSpeaking, jaVoices, chat, hasWriter } from "./services.js";
+import { settings, saveSettings, feat, translate, speak, stopSpeaking, jaVoices, chat, hasWriter, hasNativeVoice } from "./services.js";
 import { known, history as hist } from "./store.js";
 import * as Anki from "./anki.js";
 import * as OCR from "./ocr.js";
 
 const esc = G.esc;
+const NATIVE = window.JPShotAndroid || null;   // set when running inside the Android app
 const log = (...a) => console.log("[jpshot]", ...a);
 
 // -- features (Settings → Selectable features). Basics are always on. ----------------------------
@@ -156,6 +157,14 @@ async function runOCR(r) {
 }
 
 async function pasteCapture() {
+  if (NATIVE) {                       // Android app: read the clipboard natively (WebView can't)
+    const img = NATIVE.clipboardImage();
+    if (img) return startCrop(await (await fetch(img)).blob());
+    const txt = NATIVE.clipboardText();
+    if (txt.trim()) return process(txt.trim(), {});
+    toast("The clipboard is empty");
+    return;
+  }
   try {
     if (navigator.clipboard?.read) {
       const items = await navigator.clipboard.read();
@@ -810,7 +819,7 @@ function openSettings() {
     <div class="field"><span class="muted small">Japanese text size: <b id="sz">${settings.jaSize}px</b></span><input type="range" min="16" max="44" data-k="jaSize" value="${settings.jaSize}"></div>
     ${opt("showImage", "Show the screenshot above the text")}
     <h4>Voice</h4>
-    <div class="field"><select data-k="voice"><option value="">${voices.length ? "Default Japanese voice" : "Google voice (no Japanese voice on this phone)"}</option>${voices.map((v) => `<option ${settings.voice === v.name ? "selected" : ""} value="${esc(v.name)}">${esc(v.name)}</option>`).join("")}</select></div>
+    <div class="field"><select data-k="voice"><option value="">${hasNativeVoice() ? "Phone's Japanese voice (Android settings → Text-to-speech)" : voices.length ? "Default Japanese voice" : "Google voice (no Japanese voice on this phone)"}</option>${voices.map((v) => `<option ${settings.voice === v.name ? "selected" : ""} value="${esc(v.name)}">${esc(v.name)}</option>`).join("")}</select></div>
     <div class="row"><button class="btn" id="v-test">🔊 Test voice</button></div>
     ${feat("kanji") || feat("ask") ? `<h4>Explanations</h4>
       ${text("apiKey", "Anthropic API key (stays on this phone)", "password", "sk-ant-…")}
@@ -921,8 +930,37 @@ document.addEventListener("paste", (e) => {
   else if (t && t.trim()) { e.preventDefault(); process(t.trim(), {}); }
 });
 
+// -- Android app (native wrapper): bubble, screenshots and shares arrive here -----------------------
+function setupNative() {
+  if (!NATIVE) return;
+  const grid = $(".capture-grid");
+  const b = document.createElement("button");
+  b.className = "capture"; b.id = "cap-bubble"; b.style.gridColumn = "span 2"; b.style.minHeight = "72px";
+  grid.prepend(b);
+  const label = () => {
+    const on = NATIVE.bubbleRunning();
+    b.innerHTML = on ? `<span class="ico">🫧</span>Bubble is on<span class="sub">tap to turn it off</span>`
+      : `<span class="ico">🫧</span>Start the bubble<span class="sub">a floating capture button over your other apps</span>`;
+  };
+  label();
+  b.onclick = () => { if (NATIVE.bubbleRunning()) NATIVE.stopBubble(); else NATIVE.startBubble(); setTimeout(label, 600); };
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) { label(); window.jpshotNativeInbox(); } });
+}
+window.jpshotNativeInbox = async () => {
+  if (!NATIVE) return;
+  const shot = NATIVE.takeShot();
+  if (shot) {
+    try { await startCrop(await (await fetch(shot)).blob()); } catch (e) { toast("Couldn't open the screenshot"); }
+    return;
+  }
+  const text = NATIVE.takeText();
+  if (text && text.trim()) process(text.trim(), {});
+};
+
 const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-$("#share-hint").innerHTML = isIOS
+$("#share-hint").innerHTML = NATIVE
+  ? "Tip: start the <b>bubble</b>, then go back to what you're reading. Tap the bubble whenever you get stuck. JPShot opens with your screenshot (split screen works too). Long-press the bubble to close it."
+  : isIOS
   ? "Tip: take a screenshot, then tap <b>Screenshot</b> — your newest screenshot is first in the picker. Add JPShot to your Home Screen (Share → Add to Home Screen) for one-tap access."
   : "Tip: install JPShot (browser menu → Install app / Add to Home screen). Then you can screenshot anything and use <b>Share → JPShot</b>.";
 
@@ -931,8 +969,9 @@ renderActions();
 renderRecent();
 getTokenizer();
 setTimeout(() => { loadDict(); if (feat("pitch")) loadAccents(); }, 1500);
-handleShare();
-if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch((e) => log("sw:", e));
+setupNative();
+if (NATIVE) window.jpshotNativeInbox(); else handleShare();
+if (!NATIVE && "serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch((e) => log("sw:", e));
 if (feat("known") && known.data.lastSync && Date.now() - Date.parse(known.data.lastSync) > 30 * 60e3) {
   Anki.syncKnown().then((r) => log("known sync:", r)).catch(() => {});
 }

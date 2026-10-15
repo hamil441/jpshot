@@ -52,8 +52,14 @@ export function jaVoices() {
   return (window.speechSynthesis?.getVoices() || []).filter((v) => /^ja/i.test(v.lang));
 }
 let currentUtterance = null;
+const NATIVE = () => window.JPShotAndroid;
+export const hasNativeVoice = () => { try { return !!NATIVE() && NATIVE().hasJapaneseVoice(); } catch (_) { return false; } };
 export function speak(text, rate = 1, voiceName = "", onEnd = null) {
   stopSpeaking();
+  if (hasNativeVoice()) {                 // Android app: the phone's own Japanese text-to-speech
+    window.__jpshotSpeechDone = () => { window.__jpshotSpeechDone = null; onEnd && onEnd(); };
+    if (NATIVE().speak(text, rate)) return;
+  }
   const voices = jaVoices();
   if (!window.speechSynthesis || !voices.length) {
     // no Japanese system voice: fall back to Google's voice in an <audio> element
@@ -74,6 +80,7 @@ export function speak(text, rate = 1, voiceName = "", onEnd = null) {
   window.speechSynthesis.speak(u);
 }
 export function stopSpeaking() {
+  if (NATIVE()) { try { NATIVE().stopSpeaking(); } catch (_) { /* ignore */ } window.__jpshotSpeechDone = null; }
   if (currentUtterance instanceof Audio) currentUtterance.pause();
   window.speechSynthesis?.cancel();
   currentUtterance = null;
