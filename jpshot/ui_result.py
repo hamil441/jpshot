@@ -954,7 +954,8 @@ class ResultWindow(QWidget):
             for k in RENDER_MODE:
                 self.sections[k].view.set_content("翻訳中… (translating)")
             src, dst, text = "en", "ja", flatten(res.text, "en")
-        self.status.setText(f"OCR confidence {res.confidence:.0f}%")
+        self.status.setText({"manga-ocr": "Read by manga-ocr", "claude": "Read by Claude"}.get(
+            res.engine, f"OCR confidence {res.confidence:.0f}%"))
         from .history import Capture
         self._pending_capture = (req, Capture(id=time.strftime("%Y%m%d-%H%M%S"), time=time.time(),
                                               language=res.language, source=res.text, japanese="", english=""))

@@ -75,6 +75,27 @@ class SettingsDialog(QDialog):
         self.min_conf.setValue(int(cfg.ocr_min_confidence))
         self.min_conf.setToolTip("Raise if you get garbage text, lower if text is missed")
         f.addRow("OCR min confidence", self.min_conf)
+        from . import ocr as _ocr
+        has_manga = _ocr.manga_available()
+        self.ocr_engine = _combo([
+            ("auto", "Automatic — " + ("manga-ocr for Japanese (installed)" if has_manga else "Tesseract")),
+            ("tesseract", "Tesseract only (fast)"),
+            ("manga-ocr", "manga-ocr for Japanese" + ("" if has_manga else " — not installed")),
+            ("claude", "Claude (online, most accurate; uses your API key)")], cfg.ocr_engine)
+        f.addRow("Text reader", self.ocr_engine)
+        if not has_manga:
+            hint = QLabel("For much better Japanese from games, install manga-ocr (about 1 GB):<br>"
+                          "<code>pipx inject jpshot manga-ocr</code> — see the README")
+            hint.setWordWrap(True)
+            hint.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            hint.setObjectName("muted")
+            f.addRow("", hint)
+        self.ocr_pixel = QCheckBox("Clean up retro game text (pixel fonts, emulator scaling, scanlines)")
+        self.ocr_pixel.setChecked(bool(cfg.ocr_pixel_fonts))
+        f.addRow("", self.ocr_pixel)
+        self.ocr_claude = QCheckBox("When unsure, ask Claude to read it (uses your API key)")
+        self.ocr_claude.setChecked(bool(cfg.ocr_claude_fallback))
+        f.addRow("", self.ocr_claude)
 
         # -- Language services --------------------------------------------------
         svc = QGroupBox("Translation, voice & dictionary")
@@ -325,6 +346,9 @@ class SettingsDialog(QDialog):
         c.edit_updates = self.edit_updates.currentData() or "ask"
         c.tesseract_cmd = self.tesseract.text().strip()
         c.ocr_min_confidence = self.min_conf.value()
+        c.ocr_engine = self.ocr_engine.currentData() or "auto"
+        c.ocr_pixel_fonts = self.ocr_pixel.isChecked()
+        c.ocr_claude_fallback = self.ocr_claude.isChecked()
         c.translator = self.translator.currentData()
         c.voice = self.voice.currentData() or c.voice
         c.hearing_voices = [self.hearing.item(i).data(Qt.ItemDataRole.UserRole)

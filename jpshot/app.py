@@ -104,6 +104,9 @@ class JPShotApp(QObject):
             japanese.get_tagger()
         except Exception:
             log.exception("Could not load the Japanese tokenizer (pip install fugashi unidic-lite)")
+        if self.cfg.ocr_engine in ("auto", "manga-ocr") and ocr.manga_available():
+            log.info("manga-ocr is installed: loading it in the background")
+            ocr.warm_up_manga()
 
     def _setup_server(self):
         QLocalServer.removeServer(SERVER_NAME)
@@ -319,8 +322,7 @@ class JPShotApp(QObject):
     def process_image(self, img, anchor: QRect, pixmap=None):
         self.busy = True
         QApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
-        run_async(ocr.recognize, img, self.cfg.ocr_languages, self.cfg.ocr_min_confidence,
-                  self.cfg.ocr_min_chars,
+        run_async(ocr.read_screenshot, img, self.cfg,
                   on_done=lambda res: self._on_ocr(res, anchor, pixmap),
                   on_error=self._on_ocr_error)
 

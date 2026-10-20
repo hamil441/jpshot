@@ -217,6 +217,21 @@ Use **⚙ Settings** in the window (or `jpshot settings`). Changes apply immedia
 | `story_model` | `claude-haiku-5-5` | Anthropic model for explanations |
 | `japanese_font_size` / `english_font_size` | `20` / `13` | |
 
+### Reading retro game text (Sega Saturn, PS1, SNES…)
+
+Low-resolution pixel fonts are hard for ordinary OCR. JPShot has three ways to deal with them:
+
+1. **Pixel-font cleanup (on by default).** JPShot works out the emulator's scale, samples back down to the game's real pixels (which also removes scanlines), separates the text from the dialog box by color, and lets Tesseract read the clean result. In tests with Saturn-style dialog boxes this took crisp and scanline captures from 0% to about 90% of characters right.
+2. **manga-ocr (optional, offline, best for Japanese).** An AI model made for Japanese. It gets the dense kanji at 12–16 px that Tesseract still misses. It's about 1 GB with its AI library:
+   ```bash
+   pipx runpip jpshot install torch --index-url https://download.pytorch.org/whl/cpu   # small CPU-only build
+   pipx inject jpshot manga-ocr
+   ```
+   Restart JPShot. With *Text reader: Automatic* it's then used for all Japanese, with Tesseract still deciding whether there's text at all and whether it's English. The model downloads (~450 MB) the first time it's used.
+3. **Claude (optional, online).** Reads almost anything, using context to work out kanji a human can barely make out. Either pick *Text reader: Claude*, or tick *When unsure, ask Claude* to use it only when the offline readers aren't confident. It uses the same API key as explanations and costs a fraction of a cent per screenshot.
+
+All of these are in ⚙ Settings → Capture. Tips for the emulator: turn off shaders and smoothing, use integer scaling, and capture a large window.
+
 ### Going offline (optional)
 
 ```bash

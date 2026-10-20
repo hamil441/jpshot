@@ -39,6 +39,11 @@ class Config:
     ocr_languages: str = "jpn+eng"
     ocr_min_confidence: int = 55     # 0-100; raise if you get garbage text
     ocr_min_chars: int = 2           # fewer meaningful chars => "nothing detected"
+    # Text reader: "auto" (manga-ocr for Japanese when installed, else Tesseract), "tesseract",
+    # "manga-ocr" or "claude" (online, uses anthropic_api_key)
+    ocr_engine: str = "auto"
+    ocr_pixel_fonts: bool = True       # clean up retro game text (emulator scaling, scanlines, colors)
+    ocr_claude_fallback: bool = False  # ask Claude when the offline readers aren't sure (needs an API key)
 
     # Translation: "google" (tries Google, then MyMemory, then offline Argos),
     # "mymemory" (try MyMemory first) or "argos" (offline only)

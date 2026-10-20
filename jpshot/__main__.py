@@ -79,6 +79,12 @@ def cmd_check(cfg: Config) -> int:
         from PySide6.QtMultimedia import QMediaPlayer  # noqa: F401
         return f"PySide6 {PySide6.__version__} with QtMultimedia"
 
+    def manga():
+        from . import ocr
+        if not ocr.manga_available():
+            return "not installed (optional: `pipx inject jpshot manga-ocr` for better game text)"
+        return f"installed — used for Japanese (engine: {cfg.ocr_engine})"
+
     def hotkey():
         import pynput  # noqa: F401
         return f"pynput available, hotkey {cfg.hotkey or '(disabled)'}"
@@ -86,7 +92,7 @@ def cmd_check(cfg: Config) -> int:
     print(f"JPShot {__version__} — config: {Config.path()}")
     for name, fn in [("Qt", qt), ("Tesseract OCR", tess), ("Japanese tokenizer", tok),
                      ("Translation", trans), ("Dictionary", dic), ("Text-to-speech", tts),
-                     ("Global hotkey", hotkey)]:
+                     ("Global hotkey", hotkey), ("manga-ocr", manga)]:
         report(name, fn)
     print("All good!" if ok else "Some components failed — see README for install steps.")
     return 0 if ok else 1
@@ -97,7 +103,7 @@ def cmd_ocr(cfg: Config, path: str) -> int:
     from . import japanese, ocr, translate
 
     ocr.configure(cfg.tesseract_cmd)
-    res = ocr.recognize(Image.open(path), cfg.ocr_languages, cfg.ocr_min_confidence, cfg.ocr_min_chars)
+    res = ocr.read_screenshot(Image.open(path).convert("RGB"), cfg)
     if res is None:
         print("No text detected.")
         return 1
@@ -105,7 +111,7 @@ def cmd_ocr(cfg: Config, path: str) -> int:
     out = translate.translate(ocr.flatten(res.text, res.language), src, dst, cfg.translator)
     ja = res.text if src == "ja" else out
     lines = japanese.tokenize(ja)
-    print(f"\n[{src} → {dst}]  confidence {res.confidence:.0f}%\n")
+    print(f"\n[{src} → {dst}]  read by {res.engine}, confidence {res.confidence:.0f}%\n")
     print("Source:     ", res.text.replace("\n", "\n             "))
     print("Translation:", out)
     print("Furigana:   ", japanese.render(lines, "furigana")[0])

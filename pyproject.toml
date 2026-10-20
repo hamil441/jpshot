@@ -24,6 +24,7 @@ dependencies = [
 [project.optional-dependencies]
 offline-dict = ["jamdict", "jamdict-data"]
 offline-translate = ["argostranslate"]
+manga = ["manga-ocr"]
 
 [project.scripts]
 jpshot = "jpshot.__main__:main"
